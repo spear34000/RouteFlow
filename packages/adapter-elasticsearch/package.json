@@ -1,10 +1,29 @@
 {
   "name": "@routeflow/adapter-elasticsearch",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Elasticsearch adapter for RouteFlow — change source based streaming",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spear34000/RouteFlow.git"
+  },
+  "homepage": "https://github.com/spear34000/RouteFlow#readme",
+  "bugs": {
+    "url": "https://github.com/spear34000/RouteFlow/issues"
+  },
+  "keywords": [
+    "routeflow",
+    "elasticsearch",
+    "realtime",
+    "search"
+  ],
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -16,6 +35,9 @@
     "build": "tsup",
     "test": "vitest run",
     "dev": "tsup --watch"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@routeflow/core": "workspace:*"

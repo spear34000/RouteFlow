@@ -1,10 +1,31 @@
 {
   "name": "@routeflow/client",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Browser/Node client SDK for RouteFlow — REST + real-time subscriptions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spear34000/RouteFlow.git"
+  },
+  "homepage": "https://github.com/spear34000/RouteFlow#readme",
+  "bugs": {
+    "url": "https://github.com/spear34000/RouteFlow/issues"
+  },
+  "keywords": [
+    "routeflow",
+    "client",
+    "rest",
+    "realtime",
+    "websocket",
+    "sse"
+  ],
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -16,6 +37,9 @@
     "build": "tsup",
     "test": "vitest run",
     "dev": "tsup --watch"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
