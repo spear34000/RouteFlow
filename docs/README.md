@@ -11,6 +11,7 @@ RouteFlow를 실제로 쓰는 순서대로 문서를 정리합니다.
 
 ## 참고 문서
 
+- [`releases/v0.1.1.md`](./releases/v0.1.1.md) - npm 공개 패키지 릴리스 노트
 - [`releases/v0.1.0.md`](./releases/v0.1.0.md) - `v0.1.0` 릴리스 노트
 
 ## 문서 원칙
