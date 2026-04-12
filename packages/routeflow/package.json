@@ -1,0 +1,162 @@
+{
+  "name": "routeflow-api",
+  "version": "1.0.5",
+  "description": "RouteFlow — REST API with real-time database push subscriptions",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spear34000/RouteFlow.git"
+  },
+  "homepage": "https://github.com/spear34000/RouteFlow#readme",
+  "bugs": {
+    "url": "https://github.com/spear34000/RouteFlow/issues"
+  },
+  "keywords": [
+    "routeflow",
+    "rest",
+    "realtime",
+    "websocket",
+    "sse",
+    "typescript",
+    "postgres",
+    "mongodb",
+    "mysql",
+    "redis",
+    "dynamodb",
+    "elasticsearch",
+    "opensearch",
+    "snowflake",
+    "cassandra"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./sqlite": {
+      "types": "./dist/sqlite.d.ts",
+      "import": "./dist/sqlite.js",
+      "require": "./dist/sqlite.cjs"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "require": "./dist/client/index.cjs"
+    },
+    "./adapters/postgres": {
+      "types": "./dist/adapters/postgres.d.ts",
+      "import": "./dist/adapters/postgres.js",
+      "require": "./dist/adapters/postgres.cjs"
+    },
+    "./adapters/mongodb": {
+      "types": "./dist/adapters/mongodb.d.ts",
+      "import": "./dist/adapters/mongodb.js",
+      "require": "./dist/adapters/mongodb.cjs"
+    },
+    "./adapters/mysql": {
+      "types": "./dist/adapters/mysql.d.ts",
+      "import": "./dist/adapters/mysql.js",
+      "require": "./dist/adapters/mysql.cjs"
+    },
+    "./adapters/redis": {
+      "types": "./dist/adapters/redis.d.ts",
+      "import": "./dist/adapters/redis.js",
+      "require": "./dist/adapters/redis.cjs"
+    },
+    "./adapters/dynamodb": {
+      "types": "./dist/adapters/dynamodb.d.ts",
+      "import": "./dist/adapters/dynamodb.js",
+      "require": "./dist/adapters/dynamodb.cjs"
+    },
+    "./adapters/elasticsearch": {
+      "types": "./dist/adapters/elasticsearch.d.ts",
+      "import": "./dist/adapters/elasticsearch.js",
+      "require": "./dist/adapters/elasticsearch.cjs"
+    },
+    "./adapters/opensearch": {
+      "types": "./dist/adapters/opensearch.d.ts",
+      "import": "./dist/adapters/opensearch.js",
+      "require": "./dist/adapters/opensearch.cjs"
+    },
+    "./adapters/snowflake": {
+      "types": "./dist/adapters/snowflake.d.ts",
+      "import": "./dist/adapters/snowflake.js",
+      "require": "./dist/adapters/snowflake.cjs"
+    },
+    "./adapters/cassandra": {
+      "types": "./dist/adapters/cassandra.d.ts",
+      "import": "./dist/adapters/cassandra.js",
+      "require": "./dist/adapters/cassandra.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup && sed -i '' 's/from \"sqlite\"/from \"node:sqlite\"/g; s/require(\"sqlite\")/require(\"node:sqlite\")/g' dist/sqlite.js dist/sqlite.cjs",
+    "test": "vitest run",
+    "dev": "tsup --watch"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "fastify": "^4.28.0",
+    "reflect-metadata": "^0.2.2",
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "pg": "^8.13.0",
+    "mongodb": "^6.0.0",
+    "mysql2": "^3.9.0",
+    "ioredis": "^5.3.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@elastic/elasticsearch": "^8.12.0",
+    "@opensearch-project/opensearch": "^2.5.0",
+    "snowflake-sdk": "^1.10.0",
+    "cassandra-driver": "^4.7.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    },
+    "mongodb": {
+      "optional": true
+    },
+    "mysql2": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    },
+    "@aws-sdk/client-dynamodb": {
+      "optional": true
+    },
+    "@elastic/elasticsearch": {
+      "optional": true
+    },
+    "@opensearch-project/opensearch": {
+      "optional": true
+    },
+    "snowflake-sdk": {
+      "optional": true
+    },
+    "cassandra-driver": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.10",
+    "@types/ws": "^8.5.13",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

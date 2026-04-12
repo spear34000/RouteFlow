@@ -1,6 +1,7 @@
-import { Reactive, Route } from '@spear340000/core'
-import type { Context } from '@spear340000/core'
-import { MemoryAdapter } from '@spear340000/core/adapters'
+import { Reactive, Route } from 'routeflow-api'
+import type { Context, TableStore } from 'routeflow-api'
+
+// ── Schema ────────────────────────────────────────────────────────────────
 
 export interface Item {
   id: number
@@ -8,89 +9,57 @@ export interface Item {
   createdAt: string
 }
 
-export interface ItemStore {
-  list(): Promise<Item[]>
-  get(id: number): Promise<Item | null>
-  create(name: string): Promise<Item>
-}
+export const seedItems: Omit<Item, 'id'>[] = [
+  { name: 'Apple',  createdAt: '2026-01-01T00:00:00.000Z' },
+  { name: 'Banana', createdAt: '2026-01-01T00:00:01.000Z' },
+]
 
-export interface ItemChangeEmitter {
-  emitInsert(table: string, row: Item): void | Promise<void>
-}
+// ── Controller factory ────────────────────────────────────────────────────
+//
+// Accepts any TableStore<Item> — works with RouteStore (SQLite),
+// a custom Postgres class, or any other backend.
+//
+// Change events are handled at the store/adapter level:
+//   • RouteStore  → create/update/delete auto-emit inside the store
+//   • Other DBs   → native CDC (triggers, binlog, etc.) fires through the adapter
 
-export function createItemController(store: ItemStore, emitter?: ItemChangeEmitter) {
+export function createItemController(items: TableStore<Item>) {
   class ItemController {
     @Route('GET', '/items')
     async getItems(_ctx: Context): Promise<Item[]> {
-      return store.list()
+      return items.list()
     }
 
     @Route('GET', '/items/:id')
     async getItem(ctx: Context): Promise<Item | { error: string }> {
-      const item = await store.get(Number(ctx.params['id']))
-      if (!item) return { error: 'Not found' }
-      return item
+      const item = await items.get(Number(ctx.params['id']))
+      return item ?? { error: 'Not found' }
     }
 
     @Route('POST', '/items')
     async createItem(ctx: Context): Promise<Item> {
       const body = (ctx.body ?? {}) as { name?: string }
-      const item = await store.create(body.name ?? 'Unnamed')
-      await emitter?.emitInsert('items', item)
-      return item
+      return items.create({ name: body.name ?? 'Unnamed', createdAt: new Date().toISOString() })
+    }
+
+    @Route('PUT', '/items/:id')
+    async updateItem(ctx: Context): Promise<Item | { error: string }> {
+      const body = (ctx.body ?? {}) as { name?: string }
+      const updated = await items.update(Number(ctx.params['id']), { name: body.name })
+      return updated ?? { error: 'Not found' }
+    }
+
+    @Route('DELETE', '/items/:id')
+    async deleteItem(ctx: Context): Promise<{ ok: boolean }> {
+      return { ok: await items.delete(Number(ctx.params['id'])) }
     }
 
     @Reactive({ watch: 'items' })
     @Route('GET', '/items/live')
     async getLiveItems(_ctx: Context): Promise<Item[]> {
-      return store.list()
+      return items.list()
     }
   }
 
   return ItemController
 }
-
-export class MemoryItemStore implements ItemStore {
-  private items: Item[]
-  private nextId: number
-
-  constructor(seed: Item[]) {
-    this.items = [...seed]
-    this.nextId = (seed.at(-1)?.id ?? 0) + 1
-  }
-
-  async list(): Promise<Item[]> {
-    return [...this.items]
-  }
-
-  async get(id: number): Promise<Item | null> {
-    return this.items.find((item) => item.id === id) ?? null
-  }
-
-  async create(name: string): Promise<Item> {
-    const item: Item = {
-      id: this.nextId++,
-      name,
-      createdAt: new Date().toISOString(),
-    }
-    this.items.push(item)
-    return item
-  }
-}
-
-export class MemoryChangeEmitter implements ItemChangeEmitter {
-  constructor(private readonly adapter: MemoryAdapter) {}
-
-  emitInsert(table: string, row: Item): void {
-    this.adapter.emit(table, {
-      operation: 'INSERT',
-      newRow: row,
-      oldRow: null,
-    })
-  }
-}
-
-export const seedItems: Item[] = [
-  { id: 1, name: 'Apple', createdAt: '2026-01-01T00:00:00.000Z' },
-  { id: 2, name: 'Banana', createdAt: '2026-01-01T00:00:01.000Z' },
-]
