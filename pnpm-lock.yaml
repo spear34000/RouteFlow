@@ -7,38 +7,35 @@ settings:
 importers:
 
   .:
-    devDependencies:
-      turbo:
-        specifier: ^2.0.0
-        version: 2.9.6
-
-  examples/basic:
     dependencies:
-      '@routeflow/adapter-postgres':
-        specifier: workspace:*
-        version: link:../../packages/adapter-postgres
-      '@routeflow/client':
-        specifier: workspace:*
-        version: link:../../packages/client
-      '@routeflow/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      pg:
-        specifier: ^8.13.3
-        version: 8.20.0
       ws:
         specifier: ^8.18.0
         version: 8.20.0
     devDependencies:
+      '@routeflow/adapter-postgres':
+        specifier: workspace:*
+        version: link:packages/adapter-postgres
+      '@routeflow/client':
+        specifier: workspace:*
+        version: link:packages/client
+      '@routeflow/core':
+        specifier: workspace:*
+        version: link:packages/core
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.39
       '@types/pg':
         specifier: ^8.11.10
         version: 8.20.0
+      pg:
+        specifier: ^8.13.3
+        version: 8.20.0
       tsx:
         specifier: ^4.0.0
         version: 4.21.0
+      turbo:
+        specifier: ^2.0.0
+        version: 2.9.6
       typescript:
         specifier: ^5.4.0
         version: 5.9.3

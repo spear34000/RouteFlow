@@ -224,37 +224,37 @@ pnpm install
 pnpm build
 
 # 기본 메모리 데모 (WebSocket, :3000)
-pnpm --filter @routeflow/example-basic start
+pnpm run example:memory
 
 # 메모리 데모 (SSE, :3001)
-pnpm --filter @routeflow/example-basic start:memory:sse
+pnpm run example:memory:sse
 
 # Postgres 데모 (WebSocket, :3002)
 # ROUTEFLOW_POSTGRES_URL을 지정하지 않으면 postgresql://localhost:5432/routeflow 를 사용
-pnpm --filter @routeflow/example-basic start:postgres
+pnpm run example:postgres
 
 # Postgres 데모 (SSE, :3003)
-pnpm --filter @routeflow/example-basic start:postgres:sse
+pnpm run example:postgres:sse
 
 # 다른 터미널에서 Node 클라이언트 데모
-pnpm --filter @routeflow/example-basic client
+pnpm run example:client
 ```
 
 브라우저에서 `http://localhost:3000`, `:3001`, `:3002`, `:3003` 중 실행한 포트를 열면 REST 스냅샷과 live 푸시를 한 화면에서 볼 수 있습니다.
 
 ### MVP 데모 포인트
 
-`examples/basic`은 세 장면을 바로 보여주도록 구성됩니다.
+`examples/basic`은 워크스페이스 패키지가 아니라, 그대로 읽고 실행할 수 있는 예제 코드 디렉토리입니다.
 
-- `pnpm --filter @routeflow/example-basic start:memory`
+- `pnpm run example:memory`
   같은 컨트롤러 코드에 `MemoryAdapter`를 붙여 `@Reactive` 하나로 live 엔드포인트가 동작합니다.
-- `pnpm --filter @routeflow/example-basic start:memory:sse`
+- `pnpm run example:memory:sse`
   전송 레이어만 `SSE`로 바꿔도 브라우저 데모와 구독 API는 거의 그대로 유지됩니다.
-- `pnpm --filter @routeflow/example-basic start:postgres`
+- `pnpm run example:postgres`
   같은 컨트롤러 코드를 Postgres 저장소 + `PostgresAdapter`에 연결합니다.
-- `pnpm --filter @routeflow/example-basic start:postgres:sse`
+- `pnpm run example:postgres:sse`
   실제 DB + SSE 조합도 같은 경로 기반 구독 모델로 동작합니다.
-- `pnpm --filter @routeflow/example-basic client`
+- `pnpm run example:client`
   클라이언트는 REST 호출 후 `subscribe('/items/live')`만 사용하고, WS 이벤트 포맷은 직접 다루지 않습니다.
 
 ---

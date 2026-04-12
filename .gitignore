@@ -3,6 +3,7 @@ dist/
 .turbo/
 .pnpm-store/
 .claude/
+**/.turbo/
 
 .DS_Store
 

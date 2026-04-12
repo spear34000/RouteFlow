@@ -5,10 +5,6 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
-    "@routeflow/example-basic#build": {
-      "dependsOn": ["^build"],
-      "outputs": []
-    },
     "test": {
       "dependsOn": ["build"],
       "cache": false

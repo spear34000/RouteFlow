@@ -119,7 +119,7 @@ async function ensureSchema(db: Pool, activeConnectionString: string): Promise<v
         `PostgreSQL demo setup failed: ${message}`,
         `ROUTEFLOW_POSTGRES_URL=${activeConnectionString}`,
         'Start PostgreSQL locally or pass ROUTEFLOW_POSTGRES_URL to a reachable database.',
-        'Example: ROUTEFLOW_POSTGRES_URL=postgresql://user:pass@localhost:5432/routeflow pnpm --filter @routeflow/example-basic start:postgres',
+        'Example: ROUTEFLOW_POSTGRES_URL=postgresql://user:pass@localhost:5432/routeflow pnpm run example:postgres',
       ].join('\n'),
     )
   }

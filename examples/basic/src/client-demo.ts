@@ -2,10 +2,10 @@
  * Basic RouteFlow example — Node.js client demo
  *
  * Requires the server to be running:
- *   pnpm --filter @routeflow/example-basic start
+ *   pnpm run example:memory
  *
  * Run this in a separate terminal:
- *   pnpm --filter @routeflow/example-basic client
+ *   pnpm run example:client
  */
 
 import { createClient } from '@routeflow/client'
