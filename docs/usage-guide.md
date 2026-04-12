@@ -2,83 +2,47 @@
 
 ## 아키텍처: 정보는 어디에 저장되나
 
-RouteFlow에서 정보는 **3계층**에 분산되어 저장됩니다:
-
 ```
-┌─────────────────────────────────────────────────────────┐
-│  1. 클라이언트 (브라우저/앱)                              │
-│     - 구독 상태 (WebSocket/SSE 연결)                      │
-│     - 캐시된 데이터 (메모리)                              │
-└─────────────────────────────────────────────────────────┘
-                           ↕
-┌─────────────────────────────────────────────────────────┐
-│  2. RouteFlow 서버 (Node.js)                            │
-│     - 구독자 목록 (경로 → 클라이언트 매핑)                │
-│     - @Reactive 엔드포인트 캐시                         │
-│     - 변경 이벤트 버퍼                                    │
-└─────────────────────────────────────────────────────────┘
-                           ↕
-┌─────────────────────────────────────────────────────────┐
-│  3. 데이터베이스 (영구 저장소)                             │
-│     - 실제 비즈니스 데이터                               │
-│     - 변경 로그/CDC (Postgres LISTEN/NOTIFY 등)          │
-└─────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────┐
+│  클라이언트 (브라우저/앱)               │
+│  - 구독 상태 (WebSocket/SSE 연결)       │
+│  - 화면 데이터 (메모리)                 │
+└────────────────────────────────────────┘
+                    ↕
+┌────────────────────────────────────────┐
+│  RouteFlow 서버 (Node.js)              │
+│  - 구독자 목록 (경로 → 클라이언트 매핑) │
+│  - @Reactive 엔드포인트 캐시           │
+└────────────────────────────────────────┘
+                    ↕
+┌────────────────────────────────────────┐
+│  데이터베이스 (영구 저장소)             │
+│  - 실제 비즈니스 데이터                 │
+│  - CDC (LISTEN/NOTIFY, binlog, …)      │
+└────────────────────────────────────────┘
 ```
 
-### 저장 위치별 상세
-
-| 저장 위치 | 데이터 | 생명주기 |
-|----------|--------|---------|
-| **클라이언트** | 구독 상태, 캐시된 item 목록 | 페이지/앱 종료 시 소멸 |
-| **서버 메모리** | 구독자 세션, 엔드포인트 결과 캐시 | 서버 재시작 시 소멸 |
-| **DB** | items, users 등 영구 데이터 | 영구 |
-
-### 데이터 흐름 예시
-
+데이터 흐름:
 ```
-1. DB INSERT → 2. Adapter 감지 → 3. 서버 emit → 4. 구독자 브로드캐스트 → 5. 클라이언트 업데이트
+DB 변경 → Adapter 감지 → 서버 → 구독자 브로드캐스트 → 클라이언트 업데이트
 ```
+
+---
 
 ## 설치
 
-### 기본 설치
-
 ```bash
-npm install routeflow-api reflect-metadata
+npm install routeflow-api
 ```
 
-### 데이터베이스별 설치
+DB 어댑터가 필요하면 해당 드라이버만 추가합니다.
 
 ```bash
-# PostgreSQL
-npm install routeflow-api pg
-
-# MongoDB
-npm install routeflow-api mongodb
-
-# MySQL
-npm install routeflow-api mysql2
-
-# Redis
-npm install routeflow-api ioredis
-
-# DynamoDB
-npm install routeflow-api @aws-sdk/client-dynamodb
-
-# Elasticsearch
-npm install routeflow-api @elastic/elasticsearch
-
-# OpenSearch
-npm install routeflow-api @opensearch-project/opensearch
-
-# Snowflake
-npm install routeflow-api snowflake-sdk
-
-# Cassandra
-npm install routeflow-api cassandra-driver
+npm install routeflow-api pg        # PostgreSQL
+npm install routeflow-api mongodb   # MongoDB
+npm install routeflow-api mysql2    # MySQL
+npm install routeflow-api ioredis   # Redis
 ```
-
-## TypeScript 설정
 
 `tsconfig.json`:
 
@@ -87,228 +51,256 @@ npm install routeflow-api cassandra-driver
   "compilerOptions": {
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
-    "strict": true,
-    "esModuleInterop": true
+    "strict": true
   }
 }
 ```
 
-## 기본 사용법
+> `reflect-metadata`는 `routeflow-api` 안에 포함되어 있어 별도 설치 불필요.
 
-### 1. 서버 만들기
+---
 
-```typescript
-import 'reflect-metadata'
-import { createApp, MemoryAdapter, Route, Reactive } from 'routeflow-api'
+## 서버 패턴
+
+### 패턴 1 — RouteStore (SQLite, 파일 저장)
+
+로컬 개발이나 단일 서버 운영에 권장합니다.  
+`RouteStore`가 `DatabaseAdapter`와 테이블 CRUD를 하나로 통합합니다.
+
+```ts
+import { createApp, Reactive, Route } from 'routeflow-api'
+import { RouteStore } from 'routeflow-api/sqlite'
 import type { Context } from 'routeflow-api'
 
-// 메모리 어댑터 (테스트/개발용)
-const adapter = new MemoryAdapter()
-const items: Array<{ id: number; name: string }> = []
+const db    = new RouteStore('./data/app.db')
+const items = db.table('items', {
+  name:      'text',
+  createdAt: 'text',
+})
+
+await items.seed([
+  { name: 'Apple',  createdAt: '2026-01-01T00:00:00.000Z' },
+  { name: 'Banana', createdAt: '2026-01-01T00:00:01.000Z' },
+])
 
 class ItemController {
-  // 일반 REST 엔드포인트
   @Route('GET', '/items')
-  async listItems(_ctx: Context) {
-    return items
+  async list(_ctx: Context) {
+    return items.list()
   }
 
   @Route('POST', '/items')
-  async createItem(ctx: Context) {
+  async create(ctx: Context) {
     const body = ctx.body as { name: string }
-    const item = { id: items.length + 1, name: body.name }
-    items.push(item)
-    
-    // 변경 알림 발송 → 구독자에게 자동 푸시
-    adapter.emit('items', {
-      operation: 'INSERT',
-      newRow: item,
-      oldRow: null,
-    })
-    
-    return item
+    // create() → DB 저장 + @Reactive WebSocket 푸시 자동 발동
+    return items.create({ name: body.name, createdAt: new Date().toISOString() })
   }
 
-  // 실시간 엔드포인트 (@Reactive 추가)
+  @Route('PUT', '/items/:id')
+  async update(ctx: Context) {
+    const body = ctx.body as { name?: string }
+    return items.update(Number(ctx.params['id']), body) ?? { error: 'Not found' }
+  }
+
+  @Route('DELETE', '/items/:id')
+  async remove(ctx: Context) {
+    return { ok: await items.delete(Number(ctx.params['id'])) }
+  }
+
   @Reactive({ watch: 'items' })
   @Route('GET', '/items/live')
-  async listLiveItems(_ctx: Context) {
-    return items
+  async live(_ctx: Context) {
+    return items.list()
   }
+}
+
+const app = createApp({ adapter: db, port: 3000 })
+app.register(ItemController)
+await app.listen()
+```
+
+### 패턴 2 — 팩토리 + TableStore\<T\> (백엔드 교체 가능)
+
+컨트롤러가 `TableStore<T>` 인터페이스만 보도록 만들면 SQLite → Postgres → 어떤 DB든 같은 팩토리를 재사용할 수 있습니다.
+
+```ts
+import type { TableStore, Context } from 'routeflow-api'
+import { Reactive, Route } from 'routeflow-api'
+
+interface Item { id: number; name: string; createdAt: string }
+
+// 팩토리: TableStore<Item>을 받으면 어떤 백엔드든 수용
+function createItemController(items: TableStore<Item>) {
+  class ItemController {
+    @Route('GET', '/items')
+    async list(_ctx: Context) { return items.list() }
+
+    @Route('POST', '/items')
+    async create(ctx: Context) {
+      const body = ctx.body as { name: string }
+      return items.create({ name: body.name, createdAt: new Date().toISOString() })
+    }
+
+    @Reactive({ watch: 'items' })
+    @Route('GET', '/items/live')
+    async live(_ctx: Context) { return items.list() }
+  }
+  return ItemController
+}
+
+// --- SQLite (로컬) ---
+import { RouteStore } from 'routeflow-api/sqlite'
+import { createApp } from 'routeflow-api'
+
+const db    = new RouteStore('./data/app.db')
+const items = db.table('items', { name: 'text', createdAt: 'text' })
+await items.seed([{ name: 'Apple', createdAt: '2026-01-01T00:00:00.000Z' }])
+
+createApp({ adapter: db, port: 3000 })
+  .register(createItemController(items))
+
+// --- PostgreSQL (운영) — 컨트롤러 동일 ---
+import { PostgresAdapter } from 'routeflow-api/adapters/postgres'
+
+class PgItemStore implements TableStore<Item> {
+  async list()           { /* pool.query(...) */ return [] }
+  async get(id)          { /* pool.query(...) */ return null }
+  async create(data)     { /* pool.query(...) */ return { id: 1, ...data } }
+  async update(id, data) { /* pool.query(...) */ return null }
+  async delete(id)       { /* pool.query(...) */ return false }
+}
+
+const adapter = new PostgresAdapter({ connectionString: process.env.DATABASE_URL! })
+createApp({ adapter, port: 3000 })
+  .register(createItemController(new PgItemStore()))
+```
+
+### 패턴 3 — MemoryAdapter (테스트·데모)
+
+빠른 프로토타입이나 테스트에 쓸 때 사용합니다.
+
+```ts
+import { createApp, MemoryAdapter, Reactive, Route } from 'routeflow-api'
+import type { Context } from 'routeflow-api'
+
+const adapter = new MemoryAdapter()
+const data: { id: number; name: string }[] = [{ id: 1, name: 'Apple' }]
+
+class ItemController {
+  @Route('GET', '/items')
+  async list(_ctx: Context) { return data }
+
+  @Reactive({ watch: 'items' })
+  @Route('GET', '/items/live')
+  async live(_ctx: Context) { return data }
 }
 
 const app = createApp({ adapter, port: 3000 })
 app.register(ItemController)
 await app.listen()
 
-console.log('Server running on http://localhost:3000')
+// 변경 수동 발생
+data.push({ id: 2, name: 'Orange' })
+adapter.emit('items', { operation: 'INSERT', newRow: { id: 2, name: 'Orange' }, oldRow: null })
 ```
 
-### 2. 클라이언트 사용하기
+---
 
-```typescript
-import { createClient } from 'routeflow-api/client'
+## 고급 패턴
 
-const client = createClient('http://localhost:3000', {
-  // 자동 재연결 설정 (선택)
-  reconnect: {
-    maxAttempts: 5,
-    initialDelayMs: 1000,
-    backoffFactor: 2,
-    maxDelayMs: 30000,
+### 사용자별 필터링
+
+```ts
+@Reactive({
+  watch: 'orders',
+  filter: (event, ctx) => {
+    const row = event.newRow as { userId: string } | null
+    return row?.userId === ctx.params['userId']
   },
 })
-
-// 1. 스냅샷 가져오기 (일반 REST)
-const items = await client.get<Array<{ id: number; name: string }>>('/items')
-console.log('Current items:', items)
-
-// 2. 실시간 구독 시작
-const unsubscribe = client.subscribe(
-  '/items/live',
-  (updatedItems) => {
-    console.log('Items updated:', updatedItems)
-  }
-)
-
-// 3. 구독 해제 (컴포넌트 언마운트 등)
-unsubscribe()
-
-// 4. 클라이언트 종료
-client.destroy()
-```
-
-## 데이터베이스 어댑터 사용법
-
-### PostgreSQL
-
-```typescript
-import { createApp, Reactive, Route } from 'routeflow-api'
-import { PostgresAdapter } from 'routeflow-api/adapters/postgres'
-import type { Context } from 'routeflow-api'
-
-const adapter = new PostgresAdapter({
-  connectionString: process.env.DATABASE_URL,
-})
-
-class OrderController {
-  @Route('GET', '/orders')
-  async getOrders(_ctx: Context) {
-    // your query logic
-    return orders
-  }
-
-  @Reactive({ watch: 'orders' })
-  @Route('GET', '/orders/live')
-  async getLiveOrders(_ctx: Context) {
-    return orders
-  }
+@Route('GET', '/users/:userId/orders/live')
+async getUserOrders(ctx: Context) {
+  return orders.list({ where: { userId: ctx.params['userId'] } })
 }
-
-const app = createApp({ adapter, port: 3000 })
-app.register(OrderController)
-await app.listen()
 ```
 
-### MongoDB
+### 디바운스
 
-```typescript
-import { MongoDbAdapter } from 'routeflow-api/adapters/mongodb'
+연속 변경이 몰릴 때 재계산 횟수를 줄입니다.
 
-const adapter = new MongoDbAdapter({
-  connectionString: process.env.MONGODB_URL,
-  database: 'myapp',
-})
-
-const app = createApp({ adapter, port: 3000 })
+```ts
+@Reactive({ watch: 'logs', debounce: 300 })
+@Route('GET', '/logs/live')
+async liveLogs(_ctx: Context) {
+  return logs.list({ orderBy: 'createdAt', order: 'desc', limit: 50 })
+}
 ```
 
-### PollingAdapter (기타 DB)
+### SSE
 
-공식 어댑터가 없는 DB는 PollingAdapter로 직접 구현:
+```ts
+// 서버
+const app = createApp({ adapter, transport: 'sse', port: 3000 })
+```
 
-```typescript
-import { createApp, PollingAdapter } from 'routeflow-api'
+### 커스텀 라우트 (Fastify 직접 접근)
 
-const adapter = new PollingAdapter<string>({
-  intervalMs: 1000,
+```ts
+const fastify = app.getFastify()
+fastify.get('/health', async () => ({ status: 'ok' }))
+```
+
+### PollingAdapter (공식 어댑터 없는 DB)
+
+```ts
+import { PollingAdapter } from 'routeflow-api'
+
+const adapter = new PollingAdapter<number>({
+  intervalMs: 1_000,
   async readChanges({ table, cursor }) {
-    const rows = await db.query(`
-      SELECT * FROM change_log 
-      WHERE table_name = $1 AND id > $2
-      ORDER BY id
-    `, [table, cursor || 0])
-
+    const rows = await db.query(
+      'SELECT * FROM change_log WHERE table_name = ? AND id > ? ORDER BY id',
+      [table, cursor ?? 0],
+    )
     return {
       cursor: rows.at(-1)?.id ?? cursor,
-      events: rows.map((row) => ({
-        operation: row.operation,
-        newRow: row.new_data,
-        oldRow: row.old_data,
+      events: rows.map((r) => ({
+        operation: r.operation,
+        newRow: r.new_data,
+        oldRow: r.old_data,
       })),
     }
   },
 })
-
-const app = createApp({ adapter, port: 3000 })
 ```
 
-## 고급 사용법
+---
 
-### @Reactive 필터링
+## 클라이언트
 
-특정 사용자의 데이터만 구독:
+### 기본 사용법
 
-```typescript
-class UserController {
-  @Reactive({
-    watch: 'orders',
-    filter: (event, ctx) => {
-      const row = event.newRow as { userId: string } | null
-      return row?.userId === ctx.params.userId
-    },
-  })
-  @Route('GET', '/users/:userId/orders/live')
-  async getUserOrders(ctx: Context) {
-    return db.query('SELECT * FROM orders WHERE user_id = $1', [ctx.params.userId])
-  }
-}
-```
+```ts
+import { createClient } from 'routeflow-api/client'
 
-### SSE 전송 방식
+const client = createClient('http://localhost:3000')
 
-```typescript
-// 서버
-const app = createApp({
-  adapter,
-  transport: 'sse',  // 'websocket' 대신 'sse'
-  port: 3000,
+// REST 스냅샷
+const items = await client.get<Item[]>('/items')
+
+// live 구독
+const unsubscribe = client.subscribe<Item[]>('/items/live', (latest) => {
+  render(latest)
 })
 
-// 클라이언트 (동일하게 사용)
-const client = createClient('http://localhost:3000', {
-  transport: 'sse',
-})
-```
-
-### 에러 처리
-
-```typescript
-import { ReactiveClientError } from 'routeflow-api/client'
-
-try {
-  await client.get('/protected')
-} catch (error) {
-  if (error instanceof ReactiveClientError) {
-    console.log('Status:', error.status)
-    console.log('Code:', error.code)
-  }
-}
+// 정리
+unsubscribe()
+client.destroy()
 ```
 
 ### HTTP 메서드
 
-```typescript
+```ts
 await client.get('/items')
 await client.post('/items', { name: 'Apple' })
 await client.put('/items/1', { name: 'Orange' })
@@ -316,7 +308,39 @@ await client.patch('/items/1', { archived: true })
 await client.del('/items/1')
 ```
 
-## 프레임워크별 클라이언트 사용법
+### 옵션
+
+```ts
+const client = createClient('http://localhost:3000', {
+  transport: 'websocket',          // 'websocket' | 'sse'
+  headers: { Authorization: `Bearer ${token}` },
+  reconnect: {
+    maxAttempts: 10,
+    initialDelayMs: 500,
+    backoffFactor: 2,
+    maxDelayMs: 30_000,
+  },
+  onError: (err) => console.error(err),
+})
+```
+
+### 에러 처리
+
+```ts
+import { ReactiveClientError } from 'routeflow-api/client'
+
+try {
+  await client.get('/protected')
+} catch (err) {
+  if (err instanceof ReactiveClientError) {
+    console.log(err.status, err.code)
+  }
+}
+```
+
+---
+
+## 프레임워크별 클라이언트
 
 ### React
 
@@ -326,177 +350,91 @@ import { createClient } from 'routeflow-api/client'
 
 const client = createClient('http://localhost:3000')
 
+interface Item { id: number; name: string }
+
 function ItemList() {
-  const [items, setItems] = useState<Array<{ id: number; name: string }>>([])
+  const [items, setItems] = useState<Item[]>([])
 
   useEffect(() => {
-    // 초기 데이터 로드
-    client.get('/items').then(setItems)
-
-    // 실시간 구독
-    const unsubscribe = client.subscribe('/items/live', setItems)
-
-    return () => {
-      unsubscribe()
-    }
+    client.get<Item[]>('/items').then(setItems)
+    return client.subscribe<Item[]>('/items/live', setItems)
   }, [])
 
-  return (
-    <ul>
-      {items.map((item) => (
-        <li key={item.id}>{item.name}</li>
-      ))}
-    </ul>
-  )
+  return <ul>{items.map((i) => <li key={i.id}>{i.name}</li>)}</ul>
 }
 ```
 
 ### Vue
 
 ```vue
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { createClient } from 'routeflow-api/client'
 
+interface Item { id: number; name: string }
+
 const client = createClient('http://localhost:3000')
-const items = ref([])
-let unsubscribe
+const items  = ref<Item[]>([])
+let unsubscribe: (() => void) | undefined
 
 onMounted(async () => {
-  items.value = await client.get('/items')
-  unsubscribe = client.subscribe('/items/live', (data) => {
-    items.value = data
-  })
+  items.value = await client.get<Item[]>('/items')
+  unsubscribe  = client.subscribe<Item[]>('/items/live', (data) => { items.value = data })
 })
 
-onUnmounted(() => {
-  unsubscribe?.()
-})
+onUnmounted(() => unsubscribe?.())
 </script>
+
+<template>
+  <ul><li v-for="item in items" :key="item.id">{{ item.name }}</li></ul>
+</template>
 ```
 
 ### Svelte
 
 ```svelte
-<script>
+<script lang="ts">
 import { createClient } from 'routeflow-api/client'
 import { onMount, onDestroy } from 'svelte'
 
+interface Item { id: number; name: string }
+
 const client = createClient('http://localhost:3000')
-let items = []
-let unsubscribe
+let items: Item[] = []
+let unsubscribe: (() => void) | undefined
 
 onMount(async () => {
-  items = await client.get('/items')
-  unsubscribe = client.subscribe('/items/live', (data) => {
-    items = data
-  })
+  items       = await client.get<Item[]>('/items')
+  unsubscribe = client.subscribe<Item[]>('/items/live', (data) => { items = data })
 })
 
-onDestroy(() => {
-  unsubscribe?.()
-})
+onDestroy(() => unsubscribe?.())
 </script>
 
-<ul>
-  {#each items as item}
-    <li>{item.name}</li>
-  {/each}
-</ul>
+<ul>{#each items as item}<li>{item.name}</li>{/each}</ul>
 ```
 
-## 팁과 모범 사례
+---
 
-### 1. 첫 화면은 항상 스냅샷으로
+## 베스트 프랙티스
 
-```typescript
-// Good: 스냅샷 먼저, 그 다음 구독
-const items = await client.get('/items')
-render(items)
+| 상황 | 권장 |
+|---|---|
+| 로컬 개발 / 단일 서버 | `RouteStore` |
+| 멀티 백엔드 대응 | `TableStore<T>` 팩토리 패턴 |
+| 테스트 / 데모 | `MemoryAdapter` |
+| 운영 DB | 해당 네이티브 어댑터 |
 
-const unsubscribe = client.subscribe('/items/live', render)
-```
+- 첫 화면은 `get()`으로 스냅샷, 이후 `/live` 경로를 `subscribe()`
+- 화면/컴포넌트 언마운트 시 반드시 `unsubscribe()` 호출
+- 사용자별 데이터가 다를 때는 `filter` 옵션으로 구독 범위를 좁힘
+- 변경이 폭발적으로 몰리는 경우 `debounce` 사용
 
-### 2. 메모리 관리
+---
 
-```typescript
-// 컴포넌트/페이지 종료 시 반드시 구독 해제
-return () => {
-  unsubscribe()
-  // 또는 전체 클라이언트 종료
-  // client.destroy()
-}
-```
+## 참고 문서
 
-### 3. 에러 복구
-
-```typescript
-const client = createClient('http://localhost:3000', {
-  reconnect: {
-    maxAttempts: 10,
-    initialDelayMs: 500,
-    backoffFactor: 2,
-    maxDelayMs: 30000,
-  },
-  onError: (error) => {
-    console.error('Connection error:', error)
-    // 사용자에게 알림 표시
-  },
-})
-```
-
-### 4. 인증 헤더
-
-```typescript
-const client = createClient('http://localhost:3000', {
-  headers: {
-    Authorization: `Bearer ${token}`,
-  },
-})
-```
-
-### 5. 어댑터 선택 가이드
-
-| 상황 | 추천 어댑터 |
-|------|------------|
-| 빠른 테스트/프로토타입 | `MemoryAdapter` |
-| PostgreSQL 프로덕션 | `PostgresAdapter` |
-| MongoDB 프로덕션 | `MongoDbAdapter` |
-| 기타 DB | `PollingAdapter`로 직접 구현 |
-
-## 문제 해결
-
-### WebSocket 연결 실패
-
-```typescript
-// SSE로 폴백
-const client = createClient('http://localhost:3000', {
-  transport: 'sse',
-})
-```
-
-### 타입 에러
-
-```typescript
-// reflect-metadata import 확인
-import 'reflect-metadata'  // 서버 코드 최상단
-
-// tsconfig.json 설정 확인
-{
-  "experimentalDecorators": true,
-  "emitDecoratorMetadata": true
-}
-```
-
-### 변경 이벤트 안 옴
-
-1. 어댑터 연결 확인
-2. 테이블명 일치 확인 (`watch: 'items'`)
-3. 어댑터에 emit 호출 확인
-
-## 참고 자료
-
-- [API 문서](./server.md)
-- [클라이언트 문서](./client.md)
-- [어댑터 문서](./adapters.md)
 - [시작하기](./getting-started.md)
+- [서버 API](./server.md)
+- [클라이언트 API](./client.md)
+- [어댑터](./adapters.md)
