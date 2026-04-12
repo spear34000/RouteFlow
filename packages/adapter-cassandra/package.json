@@ -1,5 +1,5 @@
 {
-  "name": "@routeflow/adapter-cassandra",
+  "name": "@spear340000/adapter-cassandra",
   "version": "0.0.1",
   "description": "Cassandra adapter for RouteFlow — CDC source based change streaming",
   "main": "./dist/index.js",
@@ -18,7 +18,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@routeflow/core": "workspace:*"
+    "@spear340000/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

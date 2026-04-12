@@ -1,5 +1,5 @@
 {
-  "name": "@routeflow/client",
+  "name": "@spear340000/client",
   "version": "0.1.0",
   "description": "Browser/Node client SDK for RouteFlow — REST + real-time subscriptions",
   "license": "MIT",

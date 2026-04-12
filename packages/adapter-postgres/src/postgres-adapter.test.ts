@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { ChangeEvent } from '@routeflow/core'
+import type { ChangeEvent } from '@spear340000/core'
 
 /**
  * Unit tests for PostgresAdapter using a mocked pg.Client.

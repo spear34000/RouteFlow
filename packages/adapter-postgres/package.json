@@ -1,5 +1,5 @@
 {
-  "name": "@routeflow/adapter-postgres",
+  "name": "@spear340000/adapter-postgres",
   "version": "0.1.0",
   "description": "PostgreSQL adapter for RouteFlow — LISTEN/NOTIFY based change streaming",
   "license": "MIT",
@@ -42,7 +42,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@routeflow/core": "workspace:*",
+    "@spear340000/core": "workspace:*",
     "pg": "^8.13.3"
   },
   "devDependencies": {

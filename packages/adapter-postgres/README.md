@@ -1,4 +1,4 @@
-# @routeflow/adapter-postgres
+# @spear340000/adapter-postgres
 
 RouteFlow 공식 지원 PostgreSQL 어댑터.
 
@@ -9,14 +9,14 @@ RouteFlow 공식 지원 PostgreSQL 어댑터.
 ## 설치
 
 ```bash
-pnpm add @routeflow/adapter-postgres pg
+pnpm add @spear340000/adapter-postgres pg
 ```
 
 ## 사용법
 
 ```typescript
-import { createApp } from '@routeflow/core'
-import { PostgresAdapter } from '@routeflow/adapter-postgres'
+import { createApp } from '@spear340000/core'
+import { PostgresAdapter } from '@spear340000/adapter-postgres'
 
 const app = createApp({
   adapter: new PostgresAdapter({

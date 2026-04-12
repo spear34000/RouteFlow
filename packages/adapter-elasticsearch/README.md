@@ -1,4 +1,4 @@
-# @routeflow/adapter-elasticsearch
+# @spear340000/adapter-elasticsearch
 
 RouteFlow 공식 지원 Elasticsearch 어댑터.
 
@@ -7,7 +7,7 @@ Elasticsearch 인덱스 변경을 직접 감지하기보다, 외부 change sourc
 ## 설치
 
 ```bash
-pnpm add @routeflow/adapter-elasticsearch
+pnpm add @spear340000/adapter-elasticsearch
 ```
 
 Elasticsearch 자체에는 네이티브 change stream이 없으므로, poller나 CDC 브리지, 메시지 큐 컨슈머 등이 `change` 이벤트를 발행하는 source를 만들어 연결해야 합니다.
@@ -15,8 +15,8 @@ Elasticsearch 자체에는 네이티브 change stream이 없으므로, poller나
 ## 사용법
 
 ```typescript
-import { createApp } from '@routeflow/core'
-import { ElasticsearchAdapter } from '@routeflow/adapter-elasticsearch'
+import { createApp } from '@spear340000/core'
+import { ElasticsearchAdapter } from '@spear340000/adapter-elasticsearch'
 
 const app = createApp({
   adapter: new ElasticsearchAdapter({

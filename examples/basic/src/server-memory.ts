@@ -3,8 +3,8 @@
  * - REST-style route + @Reactive becomes live
  * - The client still subscribes by path without managing WS channels
  */
-import { createApp } from '@routeflow/core'
-import { MemoryAdapter } from '@routeflow/core/adapters'
+import { createApp } from '@spear340000/core'
+import { MemoryAdapter } from '@spear340000/core/adapters'
 import { registerDemoUi } from './register-demo-ui.js'
 import { createItemController, MemoryChangeEmitter, MemoryItemStore, seedItems } from './shared.js'
 

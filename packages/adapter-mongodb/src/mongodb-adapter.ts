@@ -1,5 +1,5 @@
-import type { ChangeEvent, DatabaseAdapter } from '@routeflow/core'
-import { ReactiveApiError } from '@routeflow/core'
+import type { ChangeEvent, DatabaseAdapter } from '@spear340000/core'
+import { ReactiveApiError } from '@spear340000/core'
 import type {
   MongoAdapterOptions,
   MongoChangeStreamDocument,

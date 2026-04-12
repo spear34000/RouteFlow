@@ -1,4 +1,4 @@
-# @routeflow/adapter-mongodb
+# @spear340000/adapter-mongodb
 
 RouteFlow 공식 지원 MongoDB 어댑터.
 
@@ -9,15 +9,15 @@ MongoDB Node 드라이버의 Change Streams를 사용합니다.
 ## 설치
 
 ```bash
-pnpm add @routeflow/adapter-mongodb mongodb
+pnpm add @spear340000/adapter-mongodb mongodb
 ```
 
 ## 사용법
 
 ```typescript
 import { MongoClient } from 'mongodb'
-import { createApp } from '@routeflow/core'
-import { MongoDbAdapter } from '@routeflow/adapter-mongodb'
+import { createApp } from '@spear340000/core'
+import { MongoDbAdapter } from '@spear340000/adapter-mongodb'
 
 const client = new MongoClient(process.env.MONGODB_URL!)
 await client.connect()

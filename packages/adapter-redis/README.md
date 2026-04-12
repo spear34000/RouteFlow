@@ -1,4 +1,4 @@
-# @routeflow/adapter-redis
+# @spear340000/adapter-redis
 
 RouteFlow 공식 지원 Redis 어댑터.
 
@@ -7,15 +7,15 @@ Redis pub/sub 채널에 발행된 변경 메시지를 RouteFlow live 엔드포�
 ## 설치
 
 ```bash
-pnpm add @routeflow/adapter-redis redis
+pnpm add @spear340000/adapter-redis redis
 ```
 
 ## 사용법
 
 ```typescript
 import { createClient } from 'redis'
-import { createApp } from '@routeflow/core'
-import { RedisAdapter } from '@routeflow/adapter-redis'
+import { createApp } from '@spear340000/core'
+import { RedisAdapter } from '@spear340000/adapter-redis'
 
 const subscriber = createClient({ url: process.env.REDIS_URL })
 await subscriber.connect()

@@ -1,4 +1,4 @@
-# @routeflow/adapter-snowflake
+# @spear340000/adapter-snowflake
 
 RouteFlow 공식 지원 Snowflake 어댑터.
 
@@ -7,14 +7,14 @@ Snowflake Stream/Task 파이프라인이나 외부 poller가 발행하는 변경
 ## 설치
 
 ```bash
-pnpm add @routeflow/adapter-snowflake
+pnpm add @spear340000/adapter-snowflake
 ```
 
 ## 사용법
 
 ```typescript
-import { createApp } from '@routeflow/core'
-import { SnowflakeAdapter } from '@routeflow/adapter-snowflake'
+import { createApp } from '@spear340000/core'
+import { SnowflakeAdapter } from '@spear340000/adapter-snowflake'
 
 const app = createApp({
   adapter: new SnowflakeAdapter({

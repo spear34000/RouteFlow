@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import type { ReactiveApp } from '@routeflow/core'
+import type { ReactiveApp } from '@spear340000/core'
 import { renderDemoHtml } from './demo-page.js'
 
 const clientModuleUrl = new URL('../../../packages/client/dist/index.mjs', import.meta.url)

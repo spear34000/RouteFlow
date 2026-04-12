@@ -90,16 +90,16 @@ createApp({
 
 | 패키지 | 설명 |
 |---|---|
-| [`@routeflow/core`](./packages/core) | 프레임워크 코어 — 라우팅, 반응형 엔진, WS/SSE 전송 |
-| [`@routeflow/adapter-postgres`](./packages/adapter-postgres) | PostgreSQL 어댑터 (LISTEN/NOTIFY) |
-| [`@routeflow/adapter-mysql`](./packages/adapter-mysql) | MySQL 어댑터 (binlog event source) |
-| [`@routeflow/adapter-mongodb`](./packages/adapter-mongodb) | MongoDB 어댑터 (Change Streams) |
-| [`@routeflow/adapter-redis`](./packages/adapter-redis) | Redis 어댑터 (pub/sub) |
-| [`@routeflow/adapter-elasticsearch`](./packages/adapter-elasticsearch) | Elasticsearch 어댑터 (external change source) |
-| [`@routeflow/adapter-opensearch`](./packages/adapter-opensearch) | OpenSearch 어댑터 (external change source) |
-| [`@routeflow/adapter-dynamodb`](./packages/adapter-dynamodb) | DynamoDB 어댑터 (Streams source) |
-| [`@routeflow/adapter-snowflake`](./packages/adapter-snowflake) | Snowflake 어댑터 (stream/task source) |
-| [`@routeflow/client`](./packages/client) | 브라우저/Node 클라이언트 SDK |
+| [`@spear340000/core`](./packages/core) | 프레임워크 코어 — 라우팅, 반응형 엔진, WS/SSE 전송 |
+| [`@spear340000/adapter-postgres`](./packages/adapter-postgres) | PostgreSQL 어댑터 (LISTEN/NOTIFY) |
+| [`@spear340000/adapter-mysql`](./packages/adapter-mysql) | MySQL 어댑터 (binlog event source) |
+| [`@spear340000/adapter-mongodb`](./packages/adapter-mongodb) | MongoDB 어댑터 (Change Streams) |
+| [`@spear340000/adapter-redis`](./packages/adapter-redis) | Redis 어댑터 (pub/sub) |
+| [`@spear340000/adapter-elasticsearch`](./packages/adapter-elasticsearch) | Elasticsearch 어댑터 (external change source) |
+| [`@spear340000/adapter-opensearch`](./packages/adapter-opensearch) | OpenSearch 어댑터 (external change source) |
+| [`@spear340000/adapter-dynamodb`](./packages/adapter-dynamodb) | DynamoDB 어댑터 (Streams source) |
+| [`@spear340000/adapter-snowflake`](./packages/adapter-snowflake) | Snowflake 어댑터 (stream/task source) |
+| [`@spear340000/client`](./packages/client) | 브라우저/Node 클라이언트 SDK |
 
 ### 실험적/보류
 
@@ -112,9 +112,9 @@ createApp({
 ### 서버
 
 ```typescript
-import { createApp, Reactive, Route } from '@routeflow/core'
-import { MemoryAdapter } from '@routeflow/core/adapters'
-import type { Context } from '@routeflow/core'
+import { createApp, Reactive, Route } from '@spear340000/core'
+import { MemoryAdapter } from '@spear340000/core/adapters'
+import type { Context } from '@spear340000/core'
 
 const adapter = new MemoryAdapter()
 const app = createApp({ adapter, port: 3000 })
@@ -142,7 +142,7 @@ adapter.emit('items', { operation: 'INSERT', newRow: { id: 2 }, oldRow: null })
 ### 클라이언트
 
 ```typescript
-import { createClient } from '@routeflow/client'
+import { createClient } from '@spear340000/client'
 
 const client = createClient('http://localhost:3000')
 
@@ -158,8 +158,8 @@ const unsubscribe = client.subscribe('/items/live', (data) => {
 ### PostgreSQL
 
 ```typescript
-import { createApp, Reactive, Route } from '@routeflow/core'
-import { PostgresAdapter } from '@routeflow/adapter-postgres'
+import { createApp, Reactive, Route } from '@spear340000/core'
+import { PostgresAdapter } from '@spear340000/adapter-postgres'
 
 const app = createApp({
   adapter: new PostgresAdapter({ connectionString: process.env.DATABASE_URL }),
@@ -169,11 +169,11 @@ const app = createApp({
 
 ### 기타 DB 공통 지원
 
-`@routeflow/core`는 `PollingAdapter`와 지원 매트릭스를 제공하므로, PostgreSQL 외 DB도 같은 API로 수용할 수 있습니다.
+`@spear340000/core`는 `PollingAdapter`와 지원 매트릭스를 제공하므로, PostgreSQL 외 DB도 같은 API로 수용할 수 있습니다.
 
 ```typescript
-import { createApp } from '@routeflow/core'
-import { PollingAdapter } from '@routeflow/core/adapters'
+import { createApp } from '@spear340000/core'
+import { PollingAdapter } from '@spear340000/core/adapters'
 
 const adapter = new PollingAdapter<string>({
   intervalMs: 1_000,
@@ -216,10 +216,10 @@ createApp({ adapter, port: 3000 })
 - Memcached, VoltDB
 - CockroachDB, TiDB, Spanner
 
-`@routeflow/core`의 지원 매트릭스는 DB별로 `tier`, `supportedModes`를 함께 제공합니다. `listOfficialDatabases()`를 쓰면 공식 지원 DB만 바로 가져올 수 있습니다.
+`@spear340000/core`의 지원 매트릭스는 DB별로 `tier`, `supportedModes`를 함께 제공합니다. `listOfficialDatabases()`를 쓰면 공식 지원 DB만 바로 가져올 수 있습니다.
 
 ```typescript
-import { listOfficialDatabases } from '@routeflow/core'
+import { listOfficialDatabases } from '@spear340000/core'
 
 console.log(listOfficialDatabases().map((db) => db.name))
 ```
@@ -280,7 +280,7 @@ pnpm test           # 전체 테스트
 
 ```bash
 POSTGRES_TEST_URL=postgresql://user:pass@localhost:5432/testdb \
-  pnpm --filter @routeflow/adapter-postgres test:integration
+  pnpm --filter @spear340000/adapter-postgres test:integration
 ```
 
 ---

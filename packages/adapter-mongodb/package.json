@@ -1,5 +1,5 @@
 {
-  "name": "@routeflow/adapter-mongodb",
+  "name": "@spear340000/adapter-mongodb",
   "version": "0.1.0",
   "description": "MongoDB adapter for RouteFlow — Change Streams based change streaming",
   "license": "MIT",
@@ -41,7 +41,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@routeflow/core": "workspace:*"
+    "@spear340000/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

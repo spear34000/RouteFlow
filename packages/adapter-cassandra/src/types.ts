@@ -1,4 +1,4 @@
-import type { ChangeEvent } from '@routeflow/core'
+import type { ChangeEvent } from '@spear340000/core'
 
 export interface CassandraCdcEvent<T = unknown> {
   table: string

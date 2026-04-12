@@ -1,4 +1,4 @@
-# @routeflow/adapter-cassandra
+# @spear340000/adapter-cassandra
 
 RouteFlow Cassandra 어댑터.
 
@@ -7,14 +7,14 @@ Cassandra CDC 또는 commit-log consumer가 발행하는 변경 이벤트를 Rou
 ## 설치
 
 ```bash
-pnpm add @routeflow/adapter-cassandra
+pnpm add @spear340000/adapter-cassandra
 ```
 
 ## 사용법
 
 ```typescript
-import { createApp } from '@routeflow/core'
-import { CassandraAdapter } from '@routeflow/adapter-cassandra'
+import { createApp } from '@spear340000/core'
+import { CassandraAdapter } from '@spear340000/adapter-cassandra'
 
 const app = createApp({
   adapter: new CassandraAdapter({

@@ -8,7 +8,7 @@
  *   pnpm run example:client
  */
 
-import { createClient } from '@routeflow/client'
+import { createClient } from '@spear340000/client'
 
 // Node 22+ has native WebSocket; polyfill for older versions
 // @ts-ignore — ws is available in the examples workspace via the server dep chain

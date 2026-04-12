@@ -7,7 +7,7 @@ RouteFlow는 어댑터를 바꿔도 상위 API 코드를 유지하는 것을 목
 테스트, 문서 예제, 로컬 프로토타입에는 `MemoryAdapter`가 가장 간단합니다.
 
 ```ts
-import { createApp, MemoryAdapter } from '@routeflow/core'
+import { createApp, MemoryAdapter } from '@spear340000/core'
 
 const adapter = new MemoryAdapter()
 const app = createApp({ adapter, port: 3000 })
@@ -26,8 +26,8 @@ adapter.emit('items', {
 ## PostgreSQL
 
 ```ts
-import { createApp } from '@routeflow/core'
-import { PostgresAdapter } from '@routeflow/adapter-postgres'
+import { createApp } from '@spear340000/core'
+import { PostgresAdapter } from '@spear340000/adapter-postgres'
 
 const app = createApp({
   adapter: new PostgresAdapter({
@@ -41,19 +41,19 @@ const app = createApp({
 
 ## 네이티브 공식 지원 어댑터
 
-- `@routeflow/adapter-postgres`
-- `@routeflow/adapter-mysql`
-- `@routeflow/adapter-mongodb`
-- `@routeflow/adapter-redis`
-- `@routeflow/adapter-elasticsearch`
-- `@routeflow/adapter-opensearch`
-- `@routeflow/adapter-dynamodb`
-- `@routeflow/adapter-snowflake`
+- `@spear340000/adapter-postgres`
+- `@spear340000/adapter-mysql`
+- `@spear340000/adapter-mongodb`
+- `@spear340000/adapter-redis`
+- `@spear340000/adapter-elasticsearch`
+- `@spear340000/adapter-opensearch`
+- `@spear340000/adapter-dynamodb`
+- `@spear340000/adapter-snowflake`
 
 ## 네이티브 어댑터가 없을 때: `PollingAdapter`
 
 ```ts
-import { createApp, PollingAdapter } from '@routeflow/core'
+import { createApp, PollingAdapter } from '@spear340000/core'
 
 const adapter = new PollingAdapter<string>({
   intervalMs: 1000,

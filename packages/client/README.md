@@ -1,4 +1,4 @@
-# @routeflow/client
+# @spear340000/client
 
 RouteFlow 브라우저/Node.js 클라이언트 SDK.
 
@@ -7,13 +7,13 @@ RouteFlow 브라우저/Node.js 클라이언트 SDK.
 ## 설치
 
 ```bash
-pnpm add @routeflow/client
+pnpm add @spear340000/client
 ```
 
 ## 사용법
 
 ```typescript
-import { createClient } from '@routeflow/client'
+import { createClient } from '@spear340000/client'
 
 const client = createClient('http://localhost:3000')
 
@@ -81,7 +81,7 @@ createClient('http://localhost:3000', {
 에러 시 `ReactiveClientError`를 throw합니다:
 
 ```typescript
-import { ReactiveClientError } from '@routeflow/client'
+import { ReactiveClientError } from '@spear340000/client'
 
 try {
   await client.get('/missing')

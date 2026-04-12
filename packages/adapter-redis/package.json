@@ -1,5 +1,5 @@
 {
-  "name": "@routeflow/adapter-redis",
+  "name": "@spear340000/adapter-redis",
   "version": "0.1.0",
   "description": "Redis adapter for RouteFlow — pub/sub based change streaming",
   "license": "MIT",
@@ -40,7 +40,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@routeflow/core": "workspace:*"
+    "@spear340000/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

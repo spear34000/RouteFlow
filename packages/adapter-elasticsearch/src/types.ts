@@ -1,4 +1,4 @@
-import type { ChangeEvent } from '@routeflow/core'
+import type { ChangeEvent } from '@spear340000/core'
 
 export interface ElasticsearchChangeSource {
   on(event: 'change', listener: (change: ElasticsearchSourceEvent) => void): void

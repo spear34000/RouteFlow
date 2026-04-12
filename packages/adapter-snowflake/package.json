@@ -1,5 +1,5 @@
 {
-  "name": "@routeflow/adapter-snowflake",
+  "name": "@spear340000/adapter-snowflake",
   "version": "0.1.0",
   "description": "Snowflake adapter for RouteFlow — stream/task source based change streaming",
   "license": "MIT",
@@ -40,7 +40,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@routeflow/core": "workspace:*"
+    "@spear340000/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

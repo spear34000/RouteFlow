@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { Client } from 'pg'
 import { PostgresAdapter } from './postgres-adapter.js'
-import type { ChangeEvent } from '@routeflow/core'
+import type { ChangeEvent } from '@spear340000/core'
 
 const TEST_URL = process.env['POSTGRES_TEST_URL']
 

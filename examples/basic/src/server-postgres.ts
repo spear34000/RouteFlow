@@ -4,8 +4,8 @@
  * - Only the adapter and store wiring change
  */
 import { Pool } from 'pg'
-import { PostgresAdapter } from '@routeflow/adapter-postgres'
-import { createApp } from '@routeflow/core'
+import { PostgresAdapter } from '@spear340000/adapter-postgres'
+import { createApp } from '@spear340000/core'
 import { registerDemoUi } from './register-demo-ui.js'
 import { createItemController, seedItems } from './shared.js'
 import type { Item, ItemStore } from './shared.js'

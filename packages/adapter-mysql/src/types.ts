@@ -1,4 +1,4 @@
-import type { ChangeEvent } from '@routeflow/core'
+import type { ChangeEvent } from '@spear340000/core'
 
 export interface MySqlBinlogTableMap {
   parentSchema?: string

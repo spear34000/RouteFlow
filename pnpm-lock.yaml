@@ -12,13 +12,13 @@ importers:
         specifier: ^8.18.0
         version: 8.20.0
     devDependencies:
-      '@routeflow/adapter-postgres':
+      '@spear340000/adapter-postgres':
         specifier: workspace:*
         version: link:packages/adapter-postgres
-      '@routeflow/client':
+      '@spear340000/client':
         specifier: workspace:*
         version: link:packages/client
-      '@routeflow/core':
+      '@spear340000/core':
         specifier: workspace:*
         version: link:packages/core
       '@types/node':
@@ -42,7 +42,7 @@ importers:
 
   packages/adapter-cassandra:
     dependencies:
-      '@routeflow/core':
+      '@spear340000/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -61,7 +61,7 @@ importers:
 
   packages/adapter-dynamodb:
     dependencies:
-      '@routeflow/core':
+      '@spear340000/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -80,7 +80,7 @@ importers:
 
   packages/adapter-elasticsearch:
     dependencies:
-      '@routeflow/core':
+      '@spear340000/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -99,7 +99,7 @@ importers:
 
   packages/adapter-mongodb:
     dependencies:
-      '@routeflow/core':
+      '@spear340000/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -118,7 +118,7 @@ importers:
 
   packages/adapter-mysql:
     dependencies:
-      '@routeflow/core':
+      '@spear340000/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -137,7 +137,7 @@ importers:
 
   packages/adapter-opensearch:
     dependencies:
-      '@routeflow/adapter-elasticsearch':
+      '@spear340000/adapter-elasticsearch':
         specifier: workspace:*
         version: link:../adapter-elasticsearch
     devDependencies:
@@ -156,7 +156,7 @@ importers:
 
   packages/adapter-postgres:
     dependencies:
-      '@routeflow/core':
+      '@spear340000/core':
         specifier: workspace:*
         version: link:../core
       pg:
@@ -181,7 +181,7 @@ importers:
 
   packages/adapter-redis:
     dependencies:
-      '@routeflow/core':
+      '@spear340000/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -200,7 +200,7 @@ importers:
 
   packages/adapter-snowflake:
     dependencies:
-      '@routeflow/core':
+      '@spear340000/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
