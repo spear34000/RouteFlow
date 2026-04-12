@@ -1,0 +1,29 @@
+{
+  "name": "@routeflow/example-basic",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Basic RouteFlow example — MemoryAdapter + WebSocket",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter @routeflow/core --filter @routeflow/client --filter @routeflow/adapter-postgres build && tsc --noEmit",
+    "start": "PORT=3000 tsx src/server.ts",
+    "start:memory": "PORT=3000 tsx src/server-memory.ts",
+    "start:memory:sse": "PORT=3001 ROUTEFLOW_TRANSPORT=sse tsx src/server-memory.ts",
+    "start:postgres": "PORT=3002 tsx src/server-postgres.ts",
+    "start:postgres:sse": "PORT=3003 ROUTEFLOW_TRANSPORT=sse tsx src/server-postgres.ts",
+    "client": "tsx src/client-demo.ts"
+  },
+  "dependencies": {
+    "@routeflow/adapter-postgres": "workspace:*",
+    "@routeflow/core": "workspace:*",
+    "@routeflow/client": "workspace:*",
+    "pg": "^8.13.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,171 @@
+import { IncomingMessage, Server as HttpServer } from 'node:http'
+import { randomUUID } from 'node:crypto'
+import { WebSocketServer, WebSocket } from 'ws'
+import type { ReactiveEngine } from '../reactive/engine.js'
+import { extractParams } from '../reactive/engine.js'
+import type { Context } from '../types.js'
+import { ReactiveApiError } from '../errors.js'
+
+/** Message sent by the client to subscribe to a reactive path. */
+interface SubscribeMessage {
+  type: 'subscribe'
+  path: string
+  /** Optional query params the client wants included in the Context */
+  query?: Record<string, string>
+}
+
+/** Message pushed by the server when data changes. */
+interface UpdateMessage {
+  type: 'update'
+  path: string
+  data: unknown
+}
+
+/** Message sent on error. */
+interface ErrorMessage {
+  type: 'error'
+  code: string
+  message: string
+}
+
+type ServerMessage = UpdateMessage | ErrorMessage
+
+function isSubscribeMessage(value: unknown): value is SubscribeMessage {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<string, unknown>)['type'] === 'subscribe' &&
+    typeof (value as Record<string, unknown>)['path'] === 'string'
+  )
+}
+
+/**
+ * WebSocket transport layer.
+ *
+ * Attaches a `ws` server to the underlying Node HTTP server. Clients connect
+ * and send a subscribe message; the transport builds a Context and registers
+ * the subscription with the ReactiveEngine.
+ *
+ * Protocol:
+ * - Client → Server: `{ "type": "subscribe", "path": "/orders/123/live" }`
+ * - Server → Client: `{ "type": "update",    "path": "/orders/123/live", "data": [...] }`
+ * - Server → Client: `{ "type": "error",     "code": "...", "message": "..." }`
+ */
+export class WebSocketTransport {
+  private readonly wss: WebSocketServer
+  /** Maps clientId → registered route pattern, for param extraction */
+  private readonly clientPatterns: Map<string, string> = new Map()
+
+  constructor(
+    private readonly engine: ReactiveEngine,
+    /** All registered route patterns (e.g. ['/orders/:userId/live']) */
+    private readonly routePatterns: string[],
+  ) {
+    // noServer=true so we can attach to Fastify's underlying http.Server manually
+    this.wss = new WebSocketServer({ noServer: true })
+    this.wss.on('connection', (ws, req) => this.handleConnection(ws, req))
+  }
+
+  /**
+   * Attach to the raw Node.js HTTP server so WebSocket upgrade requests are
+   * handled alongside Fastify routes.
+   */
+  attach(httpServer: HttpServer): void {
+    httpServer.on('upgrade', (req, socket, head) => {
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        this.wss.emit('connection', ws, req)
+      })
+    })
+  }
+
+  /** Gracefully close all connections. */
+  async close(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.wss.close((err) => (err ? reject(err) : resolve()))
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connection handling
+  // ---------------------------------------------------------------------------
+
+  private handleConnection(ws: WebSocket, _req: IncomingMessage): void {
+    const clientId = randomUUID()
+
+    ws.on('message', (raw) => {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(raw.toString())
+      } catch {
+        this.sendError(ws, 'INVALID_JSON', 'Message must be valid JSON')
+        return
+      }
+
+      if (!isSubscribeMessage(parsed)) {
+        this.sendError(ws, 'INVALID_MESSAGE', 'Expected { type: "subscribe", path: string }')
+        return
+      }
+
+      this.handleSubscribe(ws, clientId, parsed)
+    })
+
+    ws.on('close', () => {
+      this.engine.unsubscribe(clientId)
+      this.clientPatterns.delete(clientId)
+    })
+
+    ws.on('error', (err) => {
+      this.engine.unsubscribe(clientId)
+      this.clientPatterns.delete(clientId)
+      // ws errors are expected (client disconnect); just log in dev
+      if (process.env['NODE_ENV'] !== 'production') {
+        console.error('[RouteFlow] WebSocket error:', err.message)
+      }
+    })
+  }
+
+  private handleSubscribe(ws: WebSocket, clientId: string, msg: SubscribeMessage): void {
+    const { path, query = {} } = msg
+
+    // Find the matching route pattern
+    const pattern = this.routePatterns.find((p) => this.matchesPattern(path, p))
+
+    if (!pattern) {
+      this.sendError(ws, 'NO_REACTIVE_ENDPOINT', `No reactive endpoint found for path: ${path}`)
+      return
+    }
+
+    const params = extractParams(path, pattern)
+
+    const ctx: Context = {
+      params,
+      query,
+      body: undefined,
+      headers: {},
+    }
+
+    const pushFn = (subscribedPath: string, data: unknown): void => {
+      if (ws.readyState !== WebSocket.OPEN) return
+      const msg: UpdateMessage = { type: 'update', path: subscribedPath, data }
+      ws.send(JSON.stringify(msg))
+    }
+
+    // Unsubscribe any previous subscription for this client before re-subscribing
+    this.engine.unsubscribe(clientId)
+    this.clientPatterns.set(clientId, pattern)
+    this.engine.subscribe(clientId, path, ctx, pushFn)
+  }
+
+  private matchesPattern(concretePath: string, pattern: string): boolean {
+    const regexStr = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '([^/]+)')
+    return new RegExp(`^${regexStr}$`).test(concretePath)
+  }
+
+  private sendError(ws: WebSocket, code: string, message: string): void {
+    if (ws.readyState !== WebSocket.OPEN) return
+    const msg: ErrorMessage = { type: 'error', code, message }
+    ws.send(JSON.stringify(msg))
+  }
+}
