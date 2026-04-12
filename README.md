@@ -3,7 +3,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Transport](https://img.shields.io/badge/Transport-WebSocket%20%7C%20SSE-16110F)](#mvp에서-보여줘야-할-것)
 [![Adapters](https://img.shields.io/badge/Official%20Adapters-8-DB5C34)](#공식-지원)
-[![Release](https://img.shields.io/badge/Release-v0.1.0-F6C7B8?color=DB5C34)](https://github.com/spear34000/RouteFlow/releases/tag/v0.1.0)
+[![Release](https://img.shields.io/badge/Release-v0.1.0-F6C7B8?color=DB5C34)](./releases/v0.1.0.md)
 
 > **"REST처럼 쓰는데, DB 변경이 생기면 구독 중인 클라이언트에 자동으로 푸시된다."**
 
