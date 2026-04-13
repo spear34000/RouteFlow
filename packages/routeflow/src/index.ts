@@ -1,8 +1,8 @@
 import 'reflect-metadata'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import Fastify, { FastifyInstance } from 'fastify'
-import type { AppOptions, Context, Middleware, ReactiveEndpoint } from './core/types.js'
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify'
+import type { AppOptions, Context, FlowOptions, Middleware, OpenAPIOptions, ReactiveEndpoint, TableStore } from './core/types.js'
 import { routeFnStore } from './core/decorator/route.js'
 import { reactiveFnStore } from './core/decorator/reactive.js'
 import { guardFnStore, GUARD_METADATA } from './core/decorator/guard.js'
@@ -10,7 +10,8 @@ import type { RouteMetadata, ReactiveOptions } from './core/types.js'
 import { ReactiveEngine } from './core/reactive/engine.js'
 import { WebSocketTransport } from './core/transport/websocket-transport.js'
 import { SseTransport } from './core/transport/sse-transport.js'
-import { ReactiveApiError } from './core/errors.js'
+import { ReactiveApiError, notFound } from './core/errors.js'
+import { body } from './core/body.js'
 import { ROUTE_METADATA } from './core/decorator/route.js'
 import { REACTIVE_METADATA } from './core/decorator/reactive.js'
 
@@ -37,6 +38,8 @@ export type {
   Middleware,
   ReactiveOptions,
   AppOptions,
+  FlowOptions,
+  OpenAPIOptions,
   HttpMethod,
   CorsOrigin,
 } from './core/types.js'
@@ -343,6 +346,237 @@ export class ReactiveApp {
     return this
   }
 
+  // ── Flow API ───────────────────────────────────────────────────────────────
+
+  /**
+   * Register a complete reactive CRUD endpoint for a table in one line.
+   * Data changes in the store automatically **flow** to connected WebSocket/SSE clients.
+   *
+   * Creates:
+   * ```
+   * GET    /path          → store.list()
+   * GET    /path/:id      → store.get(id)           throws 404 if not found
+   * POST   /path          → store.create(body)
+   * PUT    /path/:id      → store.update(id, body)  throws 404 if not found
+   * DELETE /path/:id      → store.delete(id)        → { ok: boolean }
+   * GET    /path/live     → reactive push on every table change (WS/SSE)
+   * ```
+   *
+   * Global middleware and `guards` option apply to every generated route.
+   *
+   * @example — minimal (full CRUD + reactive in one line)
+   * ```ts
+   * const db    = new RouteStore('./data/app.db')
+   * const items = db.table('items', { name: 'text', createdAt: 'text' })
+   *
+   * createApp({ adapter: db, port: 3000 })
+   *   .flow('/items', items)
+   *   .listen()
+   * ```
+   *
+   * @example — read-only + reactive only
+   * ```ts
+   * app.flow('/products', products, { only: ['list', 'get', 'live'] })
+   * ```
+   *
+   * @example — with per-flow auth guard
+   * ```ts
+   * app.flow('/orders', orders, { guards: [requireAuth] })
+   * ```
+   */
+  flow<T extends { id: number }>(
+    basePath: string,
+    store: TableStore<T>,
+    options: FlowOptions = {},
+  ): this {
+    const tableName = options.watch
+      ?? basePath.replace(/^\//, '').split('/')[0]
+      ?? 'unknown'
+    const livePath  = `${basePath}/live`
+    const guards    = options.guards ?? []
+    const only      = new Set(
+      options.only ?? ['list', 'get', 'create', 'update', 'delete', 'live'],
+    )
+
+    // Shared handler wrapper: runs middleware chain then the given operation.
+    const exec = (
+      op: (ctx: Context) => Promise<unknown>,
+    ) => async (req: FastifyRequest, reply: FastifyReply) => {
+      const ctx: Context = {
+        params:  req.params  as Record<string, string>,
+        query:   req.query   as Record<string, string>,
+        body:    req.body,
+        headers: req.headers as Record<string, string>,
+      }
+      try {
+        await runChain([...this.middlewares, ...guards], ctx)
+        return reply.send(await op(ctx))
+      } catch (err) {
+        if (err instanceof ReactiveApiError) throw err
+        const msg = isProd
+          ? 'Internal server error'
+          : err instanceof Error ? err.message : String(err)
+        throw new ReactiveApiError('HANDLER_ERROR', msg)
+      }
+    }
+
+    if (only.has('list')) {
+      this.fastify.get(basePath, exec(() => store.list()))
+      this.registeredRoutes.push({ method: 'GET', path: basePath, reactive: false })
+    }
+
+    if (only.has('get')) {
+      this.fastify.get(`${basePath}/:id`, exec(async (ctx) => {
+        const item = await store.get(Number(ctx.params['id']))
+        if (!item) throw notFound(`${ctx.params['id']} not found`)
+        return item
+      }))
+      this.registeredRoutes.push({ method: 'GET', path: `${basePath}/:id`, reactive: false })
+    }
+
+    if (only.has('create')) {
+      this.fastify.post(basePath, exec((ctx) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        store.create(body(ctx) as any),
+      ))
+      this.registeredRoutes.push({ method: 'POST', path: basePath, reactive: false })
+    }
+
+    if (only.has('update')) {
+      this.fastify.put(`${basePath}/:id`, exec(async (ctx) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const updated = await store.update(Number(ctx.params['id']), body(ctx) as any)
+        if (!updated) throw notFound(`${ctx.params['id']} not found`)
+        return updated
+      }))
+      this.registeredRoutes.push({ method: 'PUT', path: `${basePath}/:id`, reactive: false })
+    }
+
+    if (only.has('delete')) {
+      this.fastify.delete(`${basePath}/:id`, exec(async (ctx) => ({
+        ok: await store.delete(Number(ctx.params['id'])),
+      })))
+      this.registeredRoutes.push({ method: 'DELETE', path: `${basePath}/:id`, reactive: false })
+    }
+
+    if (only.has('live')) {
+      this.engine.registerEndpoint({
+        routePath: livePath,
+        options:   { watch: tableName },
+        handler:   () => store.list(),
+      })
+      this.reactivePatterns.push(livePath)
+      this.fastify.get(livePath, exec(() => store.list()))
+      this.registeredRoutes.push({ method: 'GET', path: livePath, reactive: true })
+    }
+
+    return this
+  }
+
+  // ── OpenAPI ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Expose a machine-readable OpenAPI 3.0 spec at `GET /openapi.json`
+   * and an optional Swagger UI at `GET /_docs`.
+   *
+   * Useful for generating typed Python clients (FastAPI/httpx) and other
+   * language integrations from a single source of truth.
+   *
+   * @example
+   * ```ts
+   * createApp({ adapter: db, port: 3000 })
+   *   .flow('/items', items)
+   *   .openapi({ title: 'Items API' })
+   *   .listen()
+   * ```
+   *
+   * Then generate a typed Python client:
+   * ```bash
+   * pip install openapi-python-client
+   * openapi-python-client generate --url http://localhost:3000/openapi.json
+   * ```
+   *
+   * Or call from FastAPI (Python) with full type hints:
+   * ```python
+   * import httpx
+   * # Generated client is fully typed from the schema
+   * from items_api_client import Client
+   * from items_api_client.api.default import get_items
+   *
+   * client = Client(base_url="http://localhost:3000")
+   * items  = get_items.sync(client=client)
+   * ```
+   */
+  openapi(options: OpenAPIOptions = {}): this {
+    const spec = this.buildOpenAPISpec(options)
+
+    this.fastify.get('/openapi.json', async (_req, reply) =>
+      reply.header('Content-Type', 'application/json').send(spec),
+    )
+
+    const docsPath = options.docsPath !== false
+      ? (typeof options.docsPath === 'string' ? options.docsPath : '/_docs')
+      : null
+
+    if (docsPath) {
+      this.fastify.get(docsPath, async (_req, reply) =>
+        reply.header('Content-Type', 'text/html').send(
+          buildSwaggerUI('/openapi.json', options.title ?? 'RouteFlow API'),
+        ),
+      )
+    }
+
+    return this
+  }
+
+  private buildOpenAPISpec(options: OpenAPIOptions): Record<string, unknown> {
+    const paths: Record<string, Record<string, unknown>> = {}
+
+    for (const route of this.registeredRoutes) {
+      if (!paths[route.path]) paths[route.path] = {}
+      const method = route.method.toLowerCase()
+
+      // Build a human-readable operationId from method + path
+      const opId = `${method}_${
+        route.path
+          .replace(/[/:]/g, '_')
+          .replace(/_+/g, '_')
+          .replace(/^_|_$/g, '')
+      }`
+
+      const operation: Record<string, unknown> = {
+        operationId: opId,
+        tags: [route.path.split('/')[1] ?? 'default'],
+        responses: { '200': { description: 'Success' } },
+      }
+
+      if (route.reactive) {
+        operation['description'] =
+          'Reactive endpoint — subscribe via WebSocket/SSE for live push updates.'
+        operation['x-routeflow-reactive'] = true
+      }
+
+      // Expose request body schema for write methods
+      if (method === 'post' || method === 'put' || method === 'patch') {
+        operation['requestBody'] = {
+          required: true,
+          content: { 'application/json': { schema: { type: 'object' } } },
+        }
+      }
+
+      paths[route.path][method] = operation
+    }
+
+    return {
+      openapi: '3.0.0',
+      info: {
+        title:   options.title   ?? 'RouteFlow API',
+        version: options.version ?? '1.0.0',
+      },
+      paths,
+    }
+  }
+
   // ── Fastify escape hatch ───────────────────────────────────────────────────
 
   /**
@@ -434,6 +668,37 @@ async function runChain(middlewares: Middleware[], ctx: Context): Promise<void> 
     await middlewares[i++](ctx, next)
   }
   await next()
+}
+
+// ── Swagger UI HTML builder ─────────────────────────────────────────────────
+
+function buildSwaggerUI(specUrl: string, title: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${title}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  <style>
+    body { margin: 0; }
+    #swagger-ui .topbar { display: none; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    SwaggerUIBundle({
+      url: '${specUrl}',
+      dom_id: '#swagger-ui',
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+      layout: 'BaseLayout',
+      deepLinking: true,
+    })
+  </script>
+</body>
+</html>`
 }
 
 // ── createApp factory ───────────────────────────────────────────────────────

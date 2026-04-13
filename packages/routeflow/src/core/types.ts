@@ -132,6 +132,42 @@ export type Middleware = (ctx: Context, next: () => Promise<void>) => Promise<vo
 export type CorsOrigin = boolean | string | string[]
 
 /**
+ * Options for `app.flow()`.
+ */
+export interface FlowOptions {
+  /**
+   * Restrict which operations are registered.
+   * Default: all operations enabled.
+   *
+   * @example `only: ['list', 'create', 'live']` — read-only + create + reactive
+   */
+  only?: Array<'list' | 'get' | 'create' | 'update' | 'delete' | 'live'>
+  /**
+   * Table name to watch for reactive pushes.
+   * Default: first path segment without the leading slash (e.g. `'/items'` → `'items'`).
+   */
+  watch?: string
+  /** Per-flow guards, applied after global middleware. */
+  guards?: Middleware[]
+}
+
+/**
+ * Options for `app.openapi()`.
+ */
+export interface OpenAPIOptions {
+  /** API title shown in generated docs. Default: `'RouteFlow API'`. */
+  title?: string
+  /** API version. Default: `'1.0.0'`. */
+  version?: string
+  /**
+   * Path to serve a Swagger UI docs page.
+   * Set to `false` to disable the UI (JSON spec is always served).
+   * Default: `'/_docs'`.
+   */
+  docsPath?: string | false
+}
+
+/**
  * Options passed to createApp.
  */
 export interface AppOptions {

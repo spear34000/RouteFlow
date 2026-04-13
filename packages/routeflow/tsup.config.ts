@@ -44,6 +44,7 @@ export default defineConfig([
       'adapters/cassandra':      'src/adapters/cassandra.ts',
       'adapters/kafka':          'src/adapters/kafka.ts',
       'adapters/webhook':        'src/adapters/webhook.ts',
+      'integrations/fastapi':    'src/integrations/fastapi.ts',
     },
     clean: true,
     external: nodeExternal,
