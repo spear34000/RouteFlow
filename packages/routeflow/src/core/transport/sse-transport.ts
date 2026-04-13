@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import type { ReactiveEngine } from '../reactive/engine.js'
-import { extractParams } from '../reactive/engine.js'
+import { extractParams, pathMatchesPattern } from '../reactive/engine.js'
 import type { Context } from '../types.js'
 import { ReactiveApiError } from '../errors.js'
 
@@ -48,7 +48,7 @@ export class SseTransport {
       }
 
       const decodedPath = decodeURIComponent(path)
-      const pattern = this.routePatterns.find((p) => this.matchesPattern(decodedPath, p))
+      const pattern = this.routePatterns.find((p) => pathMatchesPattern(decodedPath, p))
 
       if (!pattern) {
         reply.code(404)
@@ -115,10 +115,4 @@ export class SseTransport {
     this.connections.clear()
   }
 
-  private matchesPattern(concretePath: string, pattern: string): boolean {
-    const regexStr = pattern
-      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '([^/]+)')
-    return new RegExp(`^${regexStr}$`).test(concretePath)
-  }
 }

@@ -2,7 +2,7 @@ import { IncomingMessage, Server as HttpServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { ReactiveEngine } from '../reactive/engine.js'
-import { extractParams } from '../reactive/engine.js'
+import { extractParams, pathMatchesPattern } from '../reactive/engine.js'
 import type { Context } from '../types.js'
 import { ReactiveApiError } from '../errors.js'
 
@@ -128,7 +128,7 @@ export class WebSocketTransport {
     const { path, query = {} } = msg
 
     // Find the matching route pattern
-    const pattern = this.routePatterns.find((p) => this.matchesPattern(path, p))
+    const pattern = this.routePatterns.find((p) => pathMatchesPattern(path, p))
 
     if (!pattern) {
       this.sendError(ws, 'NO_REACTIVE_ENDPOINT', `No reactive endpoint found for path: ${path}`)
@@ -154,13 +154,6 @@ export class WebSocketTransport {
     this.engine.unsubscribe(clientId)
     this.clientPatterns.set(clientId, pattern)
     this.engine.subscribe(clientId, path, ctx, pushFn)
-  }
-
-  private matchesPattern(concretePath: string, pattern: string): boolean {
-    const regexStr = pattern
-      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '([^/]+)')
-    return new RegExp(`^${regexStr}$`).test(concretePath)
   }
 
   private sendError(ws: WebSocket, code: string, message: string): void {
