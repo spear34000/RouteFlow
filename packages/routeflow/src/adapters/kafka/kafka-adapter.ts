@@ -132,7 +132,14 @@ export class KafkaAdapter implements DatabaseAdapter {
   // Internal
   // ---------------------------------------------------------------------------
 
+  /** Maximum accepted Kafka message size (10 MiB). Larger messages are dropped. */
+  private static readonly MAX_MESSAGE_BYTES = 10 * 1024 * 1024
+
   private async handleMessage(topic: string, value: Buffer | null): Promise<void> {
+    if (value && value.byteLength > KafkaAdapter.MAX_MESSAGE_BYTES) {
+      console.warn(`[RouteFlow/kafka] Dropping oversized message on topic "${topic}" (${value.byteLength} bytes > ${KafkaAdapter.MAX_MESSAGE_BYTES})`)
+      return
+    }
     const rawStr = value?.toString() ?? null
 
     let parsed: (Pick<ChangeEvent, 'operation'> & Partial<Pick<ChangeEvent, 'newRow' | 'oldRow'>>) | null

@@ -54,6 +54,12 @@ export class SseTransport {
         reply.code(400)
         throw new ReactiveApiError('SSE_INVALID_PATH', 'Query param "path" contains invalid percent-encoding')
       }
+
+      if (/[\r\n]/.test(decodedPath)) {
+        reply.code(400)
+        throw new ReactiveApiError('SSE_INVALID_PATH', 'Path must not contain newline characters')
+      }
+
       const pattern = this.routePatterns.find((p) => pathMatchesPattern(decodedPath, p))
 
       if (!pattern) {

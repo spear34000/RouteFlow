@@ -200,10 +200,10 @@ export class WebhookAdapter implements DatabaseAdapter {
     if (!hex) return false
     try {
       const expected = createHmac('sha256', this.secret!).update(rawBody).digest('hex')
-      const a = Buffer.from(hex.padEnd(expected.length, '\x00'))
-      const b = Buffer.from(expected)
-      if (a.length !== b.length) return false
-      return timingSafeEqual(a, b)
+      // Both buffers must be the same byte length for timingSafeEqual.
+      // hex length must match expected (64 hex chars = 32 bytes SHA-256).
+      if (hex.length !== expected.length) return false
+      return timingSafeEqual(Buffer.from(hex, 'utf8'), Buffer.from(expected, 'utf8'))
     } catch {
       return false
     }

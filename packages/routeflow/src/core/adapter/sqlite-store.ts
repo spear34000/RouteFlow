@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, resolve, isAbsolute } from 'node:path'
 
 /**
  * A generic record type for SQLite rows.
@@ -28,10 +28,16 @@ export class SQLiteStore {
   readonly path: string
 
   /**
-   * @param dbPath - Path to the SQLite file. Parent directories are created automatically.
-   *                 Relative paths are resolved from `process.cwd()`.
+   * @param dbPath   - Path to the SQLite file. Parent directories are created automatically.
+   *                   Relative paths are resolved from `process.cwd()`.
+   *                   **Security**: if `dbPath` is derived from untrusted input (e.g. an
+   *                   env variable or HTTP parameter), pass `allowedDir` to restrict where
+   *                   the file may be created.
+   * @param allowedDir - Optional directory that the resolved `dbPath` must be contained
+   *                   within. Throws if the resolved path escapes this directory.
+   *                   Example: `new SQLiteStore(userPath, process.cwd() + '/data')`
    */
-  constructor(dbPath: string) {
+  constructor(dbPath: string, allowedDir?: string) {
     if (typeof dbPath !== 'string' || dbPath.trim() === '') {
       throw new Error('[RouteFlow] SQLiteStore: dbPath must be a non-empty string.')
     }
@@ -41,6 +47,16 @@ export class SQLiteStore {
       throw new Error('[RouteFlow] SQLiteStore: dbPath must not contain null bytes.')
     }
     this.path = resolve(dbPath)
+    // Directory traversal guard — when allowedDir is provided, ensure the
+    // resolved path stays within that directory.
+    if (allowedDir) {
+      const safeDir = resolve(allowedDir)
+      if (!this.path.startsWith(safeDir + (isAbsolute(safeDir) ? '/' : ''))) {
+        throw new Error(
+          `[RouteFlow] SQLiteStore: dbPath "${this.path}" is outside the allowed directory "${safeDir}".`,
+        )
+      }
+    }
     mkdirSync(dirname(this.path), { recursive: true })
     this.db = new DatabaseSync(this.path)
   }

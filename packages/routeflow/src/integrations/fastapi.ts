@@ -17,7 +17,7 @@
  */
 
 import { writeFileSync, mkdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, isAbsolute } from 'node:path'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -374,6 +374,12 @@ __all__ = ["RouteFlowClient"]
   const requirements = `httpx>=0.27.0\n`
 
   // ── Write files ───────────────────────────────────────────────────────────
+  // Guard against path traversal: outDir must be relative and must not contain '..'
+  if (isAbsolute(outDir) || outDir.split(/[\\/]/).some((seg) => seg === '..')) {
+    throw new Error(
+      `[RouteFlow] generatePythonClient: outDir must be a relative path without ".." segments (got "${outDir}")`,
+    )
+  }
   const abs = join(process.cwd(), outDir)
   mkdirSync(abs, { recursive: true })
   writeFileSync(join(abs, '_client.py'),        clientPy,    'utf8')

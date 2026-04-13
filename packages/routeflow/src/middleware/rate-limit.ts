@@ -13,6 +13,12 @@ export interface RateLimitOptions {
   /**
    * Derive the rate-limit key from the request context.
    * Defaults to `x-forwarded-for` → `x-real-ip` → `'unknown'`.
+   *
+   * **Security**: `x-forwarded-for` can be spoofed by clients unless your
+   * infrastructure (load balancer / reverse proxy) strips or overwrites it.
+   * In production, supply a `keyBy` that reads a header set exclusively by
+   * a trusted proxy (e.g. Cloudflare's `cf-connecting-ip`) or uses a
+   * network-layer source IP from your platform's context.
    */
   keyBy?: (ctx: import('../core/types.js').Context) => string
   /**

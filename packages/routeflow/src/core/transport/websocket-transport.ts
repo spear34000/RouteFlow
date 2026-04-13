@@ -119,7 +119,12 @@ export class WebSocketTransport {
     // cors: true → allow all origins (including no-origin requests from non-browser clients)
     if (this.allowedOrigins === true) return true
 
-    const origin = req.headers['origin']
+    // The Origin header must be a single value; comma-separated (multi-value)
+    // Origins are illegal per RFC 6454 but some proxies inject them. Reject to
+    // prevent bypass via "allowed,evil.com" tricks.
+    const rawOrigin = req.headers['origin']
+    const origin = Array.isArray(rawOrigin) ? rawOrigin[0] : rawOrigin
+    if (origin && origin.includes(',')) return false
 
     // Non-browser clients (e.g. server-to-server) send no Origin header.
     // Allow them when cors is not explicitly restricted (true = open policy already

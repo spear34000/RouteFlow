@@ -684,12 +684,23 @@ async function runChain(middlewares: Middleware[], ctx: Context): Promise<void> 
 
 // ── Swagger UI HTML builder ─────────────────────────────────────────────────
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function buildSwaggerUI(specUrl: string, title: string): string {
+  const safeTitle   = escapeHtml(title)
+  const safeSpecUrl = escapeHtml(specUrl)
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>${title}</title>
+  <title>${safeTitle}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
   <style>
@@ -702,7 +713,7 @@ function buildSwaggerUI(specUrl: string, title: string): string {
   <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
   <script>
     SwaggerUIBundle({
-      url: '${specUrl}',
+      url: '${safeSpecUrl}',
       dom_id: '#swagger-ui',
       presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
       layout: 'BaseLayout',
