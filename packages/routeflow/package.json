@@ -1,6 +1,6 @@
 {
   "name": "routeflow-api",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "RouteFlow — REST API with real-time database push subscriptions",
   "license": "Apache-2.0",
   "repository": {
@@ -96,10 +96,25 @@
       "types": "./dist/adapters/cassandra.d.ts",
       "import": "./dist/adapters/cassandra.js",
       "require": "./dist/adapters/cassandra.cjs"
+    },
+    "./adapters/kafka": {
+      "types": "./dist/adapters/kafka.d.ts",
+      "import": "./dist/adapters/kafka.js",
+      "require": "./dist/adapters/kafka.cjs"
+    },
+    "./adapters/webhook": {
+      "types": "./dist/adapters/webhook.d.ts",
+      "import": "./dist/adapters/webhook.js",
+      "require": "./dist/adapters/webhook.cjs"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js",
+      "require": "./dist/react/index.cjs"
     }
   },
   "scripts": {
-    "build": "tsup && sed -i '' 's/from \"sqlite\"/from \"node:sqlite\"/g; s/require(\"sqlite\")/require(\"node:sqlite\")/g' dist/sqlite.js dist/sqlite.cjs",
+    "build": "tsup",
     "test": "vitest run",
     "dev": "tsup --watch"
   },
@@ -112,15 +127,18 @@
     "ws": "^8.18.0"
   },
   "peerDependencies": {
-    "pg": "^8.13.0",
-    "mongodb": "^6.0.0",
-    "mysql2": "^3.9.0",
-    "ioredis": "^5.3.0",
     "@aws-sdk/client-dynamodb": "^3.0.0",
     "@elastic/elasticsearch": "^8.12.0",
     "@opensearch-project/opensearch": "^2.5.0",
-    "snowflake-sdk": "^1.10.0",
-    "cassandra-driver": "^4.7.0"
+    "cassandra-driver": "^4.7.0",
+    "ioredis": "^5.3.0",
+    "kafkajs": "^2.0.0",
+    "mongodb": "^6.0.0",
+    "mysql2": "^3.9.0",
+    "pg": "^8.13.0",
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0",
+    "snowflake-sdk": "^1.10.0"
   },
   "peerDependenciesMeta": {
     "pg": {
@@ -149,11 +167,21 @@
     },
     "cassandra-driver": {
       "optional": true
+    },
+    "kafkajs": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.10",
+    "@types/react": "^19.2.14",
     "@types/ws": "^8.5.13",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",

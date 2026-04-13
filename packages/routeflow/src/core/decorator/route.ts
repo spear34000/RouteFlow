@@ -1,5 +1,15 @@
 import type { HttpMethod, RouteMetadata } from '../types.js'
 
+// ── HTTP method shorthand decorators ─────────────────────────────────────────
+//
+// These are simple aliases for @Route — use whichever style you prefer.
+//
+// @Get('/items')    ≡  @Route('GET',    '/items')
+// @Post('/items')   ≡  @Route('POST',   '/items')
+// @Put('/items/:id')≡  @Route('PUT',    '/items/:id')
+// @Patch('/items/:id')≡@Route('PATCH',  '/items/:id')
+// @Delete('/items/:id')≡@Route('DELETE','/items/:id')
+
 /** Symbol key used to store @Route metadata on a method. */
 export const ROUTE_METADATA = Symbol('reactive-api:route')
 
@@ -38,3 +48,14 @@ export function Route(method: HttpMethod, path: string) {
     }
   }
 }
+
+/** Shorthand for `@Route('GET', path)`. */
+export const Get    = (path: string) => Route('GET',    path)
+/** Shorthand for `@Route('POST', path)`. */
+export const Post   = (path: string) => Route('POST',   path)
+/** Shorthand for `@Route('PUT', path)`. */
+export const Put    = (path: string) => Route('PUT',    path)
+/** Shorthand for `@Route('PATCH', path)`. */
+export const Patch  = (path: string) => Route('PATCH',  path)
+/** Shorthand for `@Route('DELETE', path)`. Named `Delete` because `delete` is a reserved keyword. */
+export const Delete = (path: string) => Route('DELETE', path)

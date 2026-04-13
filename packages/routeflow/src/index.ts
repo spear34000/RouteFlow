@@ -16,11 +16,13 @@ import { REACTIVE_METADATA } from './core/decorator/reactive.js'
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-export { Route } from './core/decorator/route.js'
+export { Route, Get, Post, Put, Patch, Delete } from './core/decorator/route.js'
 export { Reactive } from './core/decorator/reactive.js'
 export { Guard } from './core/decorator/guard.js'
 export { ReactiveApiError, badRequest, unauthorized, forbidden, notFound } from './core/errors.js'
 export { body } from './core/body.js'
+export { rateLimit } from './middleware/rate-limit.js'
+export type { RateLimitOptions } from './middleware/rate-limit.js'
 export {
   SUPPORTED_DATABASES,
   getDatabaseSupport,
