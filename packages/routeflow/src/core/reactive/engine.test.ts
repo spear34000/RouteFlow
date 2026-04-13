@@ -168,10 +168,11 @@ describe('ReactiveEngine', () => {
 
     adapter.emit('items', { operation: 'INSERT', newRow: { id: 2 }, oldRow: null })
 
-    // Handler is async — wait a microtask tick
+    // Handler is async — wait a microtask tick.
+    // subscribe() fires an immediate initial push + one push for the DB change.
     await Promise.resolve()
 
-    expect(pushed).toHaveBeenCalledOnce()
+    expect(pushed).toHaveBeenCalledTimes(2)
     expect(pushed).toHaveBeenCalledWith('/items/live', [{ id: 1 }])
   })
 
@@ -184,6 +185,7 @@ describe('ReactiveEngine', () => {
       handler: async () => [],
     })
 
+    // Unsubscribe immediately — the initial push guard skips it
     engine.subscribe('client-1', '/items/live', makeCtx(), pushed)
     engine.unsubscribe('client-1')
 
@@ -212,12 +214,14 @@ describe('ReactiveEngine', () => {
     engine.subscribe('client-1', '/orders/alice/live', makeCtx({ userId: 'alice' }), pushedUser1)
     engine.subscribe('client-2', '/orders/bob/live', makeCtx({ userId: 'bob' }), pushedUser2)
 
-    // Only alice's row
+    // Only alice's row triggers the filter; but both got an initial push on subscribe
     adapter.emit('orders', { operation: 'INSERT', newRow: { userId: 'alice', item: 'book' }, oldRow: null })
     await Promise.resolve()
 
-    expect(pushedUser1).toHaveBeenCalledOnce()
-    expect(pushedUser2).not.toHaveBeenCalled()
+    // alice: 1 initial push + 1 DB-change push (filter passes)
+    expect(pushedUser1).toHaveBeenCalledTimes(2)
+    // bob: 1 initial push only (DB-change filtered out)
+    expect(pushedUser2).toHaveBeenCalledTimes(1)
   })
 
   it('watches multiple tables (watch: string[])', async () => {
@@ -231,13 +235,15 @@ describe('ReactiveEngine', () => {
 
     engine.subscribe('client-1', '/feed/live', makeCtx(), pushed)
 
+    // 1 initial push + 1 posts emit = 2
     adapter.emit('posts', { operation: 'INSERT', newRow: { id: 1 }, oldRow: null })
     await Promise.resolve()
-    expect(pushed).toHaveBeenCalledTimes(1)
+    expect(pushed).toHaveBeenCalledTimes(2)
 
+    // + 1 comments emit = 3
     adapter.emit('comments', { operation: 'INSERT', newRow: { id: 2 }, oldRow: null })
     await Promise.resolve()
-    expect(pushed).toHaveBeenCalledTimes(2)
+    expect(pushed).toHaveBeenCalledTimes(3)
   })
 
   it('debounces rapid changes and pushes only once', async () => {
@@ -256,13 +262,15 @@ describe('ReactiveEngine', () => {
     adapter.emit('items', { operation: 'INSERT', newRow: { id: 2 }, oldRow: null })
     adapter.emit('items', { operation: 'INSERT', newRow: { id: 3 }, oldRow: null })
 
-    // Debounce window hasn't elapsed yet
+    // Debounce window hasn't elapsed yet; initial push is also not yet resolved
+    // (it's behind an async handler — pending microtask)
     expect(pushed).not.toHaveBeenCalled()
 
     vi.advanceTimersByTime(150)
     await Promise.resolve()
 
-    expect(pushed).toHaveBeenCalledOnce()
+    // 1 initial push (from subscribe) + 1 debounced push (3 emits collapsed)
+    expect(pushed).toHaveBeenCalledTimes(2)
     vi.useRealTimers()
   })
 })

@@ -109,6 +109,29 @@ export interface RouteMetadata {
 }
 
 /**
+ * Middleware function — runs before every HTTP route handler.
+ *
+ * Call `next()` to continue the chain; throw a `ReactiveApiError` to abort.
+ *
+ * @example
+ * ```ts
+ * app.use(async (ctx, next) => {
+ *   if (!ctx.headers['authorization']) throw unauthorized()
+ *   await next()
+ * })
+ * ```
+ */
+export type Middleware = (ctx: Context, next: () => Promise<void>) => Promise<void>
+
+/**
+ * CORS origin configuration.
+ * - `true` — allow all origins
+ * - `string` — single allowed origin (e.g. `'https://myapp.com'`)
+ * - `string[]` — multiple allowed origins
+ */
+export type CorsOrigin = boolean | string | string[]
+
+/**
  * Options passed to createApp.
  */
 export interface AppOptions {
@@ -118,6 +141,25 @@ export interface AppOptions {
   transport?: 'websocket' | 'sse'
   /** Port to listen on. Defaults to 3000. */
   port?: number
+  /**
+   * CORS configuration.
+   * - `true` (default) — allow all origins during development
+   * - `false` — disable CORS headers
+   * - `'https://myapp.com'` — single allowed origin
+   * - `['https://a.com', 'https://b.com']` — multiple origins
+   */
+  cors?: CorsOrigin
+  /**
+   * Maximum HTTP request body size in bytes.
+   * Defaults to 1 048 576 (1 MiB).
+   */
+  bodyLimit?: number
+  /**
+   * Enable Fastify request/response logging.
+   * Useful in development; disable in test environments.
+   * Defaults to false.
+   */
+  logger?: boolean
 }
 
 /**

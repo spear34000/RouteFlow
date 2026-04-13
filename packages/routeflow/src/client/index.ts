@@ -1,5 +1,6 @@
 export { createClient, ReactiveClient } from './client.js'
 export { ReactiveClientError } from './errors.js'
+export type { ClientErrorCode } from './errors.js'
 export type {
   ClientOptions,
   ReconnectOptions,

@@ -51,18 +51,24 @@ function isSubscribeMessage(value: unknown): value is SubscribeMessage {
  * - Server → Client: `{ "type": "update",    "path": "/orders/123/live", "data": [...] }`
  * - Server → Client: `{ "type": "error",     "code": "...", "message": "..." }`
  */
+/** Maximum concurrent WebSocket connections. Tune via WS_MAX_CONNECTIONS env var. */
+const MAX_CONNECTIONS = Number(process.env['WS_MAX_CONNECTIONS'] ?? 5_000)
+
 export class WebSocketTransport {
   private readonly wss: WebSocketServer
   /** Maps clientId → registered route pattern, for param extraction */
   private readonly clientPatterns: Map<string, string> = new Map()
+  /** Live connection count — tracked for DoS protection */
+  private connectionCount = 0
 
   constructor(
     private readonly engine: ReactiveEngine,
     /** All registered route patterns (e.g. ['/orders/:userId/live']) */
     private readonly routePatterns: string[],
   ) {
-    // noServer=true so we can attach to Fastify's underlying http.Server manually
-    this.wss = new WebSocketServer({ noServer: true })
+    // noServer=true so we can attach to Fastify's underlying http.Server manually.
+    // maxPayload: reject messages larger than 64 KiB to limit DoS exposure.
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
     this.wss.on('connection', (ws, req) => this.handleConnection(ws, req))
   }
 
@@ -90,6 +96,13 @@ export class WebSocketTransport {
   // ---------------------------------------------------------------------------
 
   private handleConnection(ws: WebSocket, _req: IncomingMessage): void {
+    // Reject connections beyond the cap
+    if (this.connectionCount >= MAX_CONNECTIONS) {
+      ws.close(1008, 'Server at capacity')
+      return
+    }
+    this.connectionCount++
+
     const clientId = randomUUID()
 
     ws.on('message', (raw) => {
@@ -110,11 +123,13 @@ export class WebSocketTransport {
     })
 
     ws.on('close', () => {
+      this.connectionCount--
       this.engine.unsubscribe(clientId)
       this.clientPatterns.delete(clientId)
     })
 
     ws.on('error', (err) => {
+      this.connectionCount--
       this.engine.unsubscribe(clientId)
       this.clientPatterns.delete(clientId)
       // ws errors are expected (client disconnect); just log in dev

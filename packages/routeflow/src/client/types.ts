@@ -106,4 +106,6 @@ export interface SubscriptionRecord<T = unknown> {
   path: string
   query?: Record<string, string>
   callback: SubscriptionCallback<T>
+  onClose?: () => void
+  onError?: (error: { code: string; message: string }) => void
 }

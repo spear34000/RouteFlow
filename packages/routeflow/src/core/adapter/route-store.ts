@@ -72,8 +72,17 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
   // ── Schema bootstrap ──────────────────────────────────────────────────────
 
   private createTable(): void {
+    const validTypes: ReadonlySet<ColumnType> = new Set(['integer', 'text', 'real', 'json'])
+    for (const [col, type] of Object.entries(this.schema)) {
+      if (!validTypes.has(type as ColumnType)) {
+        throw new Error(
+          `[RouteFlow] Invalid column type "${type}" for "${col}" in table "${this.tableName}". ` +
+            `Must be one of: ${[...validTypes].join(', ')}.`,
+        )
+      }
+    }
     const cols = Object.entries(this.schema)
-      .map(([col, type]) => `${col} ${type === 'json' ? 'TEXT' : type.toUpperCase()}`)
+      .map(([col, type]) => `"${col}" ${type === 'json' ? 'TEXT' : type.toUpperCase()}`)
       .join(', ')
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS "${this.tableName}" (id INTEGER PRIMARY KEY AUTOINCREMENT, ${cols})`,
@@ -111,12 +120,30 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
    */
   async list(options: ListOptions<S> = {}): Promise<InferRow<S>[]> {
     const { where, orderBy = 'id', order = 'asc', limit } = options
+
+    // ── Input validation ────────────────────────────────────────────────────
+    const validColumns = new Set<string>(['id', ...Object.keys(this.schema)])
+    const orderByStr = String(orderBy)
+    if (!validColumns.has(orderByStr)) {
+      throw new Error(`Invalid orderBy column "${orderByStr}"`)
+    }
+    if (order !== 'asc' && order !== 'desc') {
+      throw new Error(`Invalid order direction "${order as string}"`)
+    }
+    if (limit != null) {
+      if (!Number.isInteger(limit) || limit < 0 || limit > 10_000) {
+        throw new Error(`Invalid limit "${limit}" — must be a non-negative integer ≤ 10 000`)
+      }
+    }
+
     const params: unknown[] = []
     const whereParts: string[] = []
 
     if (where) {
       for (const [k, v] of Object.entries(where)) {
-        whereParts.push(`${k} = ?`)
+        // Whitelist column names to prevent injection via where keys
+        if (!validColumns.has(k)) throw new Error(`Invalid where column "${k}"`)
+        whereParts.push(`"${k}" = ?`)
         params.push(this.jsonCols.has(k) ? JSON.stringify(v) : v)
       }
     }
@@ -124,7 +151,7 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
     const clauses = [
       `SELECT * FROM "${this.tableName}"`,
       whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '',
-      `ORDER BY ${String(orderBy)} ${order.toUpperCase()}`,
+      `ORDER BY "${orderByStr}" ${order}`,
       limit != null ? `LIMIT ${limit}` : '',
     ].filter(Boolean)
 

@@ -59,12 +59,20 @@ export class ReactiveWebSocket {
     path: string,
     callback: SubscriptionCallback<T>,
     query?: Record<string, string>,
+    onClose?: () => void,
+    onError?: (error: { code: string; message: string }) => void,
   ): Unsubscribe {
     if (!this.subscriptions.has(path)) {
       this.subscriptions.set(path, new Set())
     }
 
-    const record: SubscriptionRecord<T> = { path, query, callback: callback as SubscriptionCallback<unknown> }
+    const record: SubscriptionRecord<T> = {
+      path,
+      query,
+      callback: callback as SubscriptionCallback<unknown>,
+      onClose,
+      onError,
+    }
     this.subscriptions.get(path)!.add(record as SubscriptionRecord)
 
     // Ensure socket is open
@@ -144,6 +152,14 @@ export class ReactiveWebSocket {
 
     ws.onclose = () => {
       this.ws = null
+      // Notify all subscribers that the connection closed
+      for (const records of this.subscriptions.values()) {
+        for (const record of records) {
+          if (record.onClose) {
+            try { record.onClose() } catch { /* ignore */ }
+          }
+        }
+      }
       if (!this.destroyed) {
         this.scheduleReconnect()
       }
@@ -189,10 +205,22 @@ export class ReactiveWebSocket {
 
     if (parsed.type === 'error') {
       const errInfo = { code: parsed.code, message: parsed.message }
-      if (this.onError) {
-        this.onError(errInfo)
-      } else {
-        console.warn(`[RouteFlow/client] Server error ${parsed.code}: ${parsed.message}`)
+      // Try per-subscription handlers first, fall back to global onError
+      let handled = false
+      for (const records of this.subscriptions.values()) {
+        for (const record of records) {
+          if (record.onError) {
+            try { record.onError(errInfo) } catch { /* ignore */ }
+            handled = true
+          }
+        }
+      }
+      if (!handled) {
+        if (this.onError) {
+          this.onError(errInfo)
+        } else {
+          console.warn(`[RouteFlow/client] Server error ${parsed.code}: ${parsed.message}`)
+        }
       }
       return
     }

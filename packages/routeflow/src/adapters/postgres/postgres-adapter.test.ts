@@ -232,7 +232,7 @@ describe('PostgresAdapter — unit', () => {
     await custom.connect()
 
     const queries: string[] = mockQuery.mock.calls.map((c) => String(c[0]))
-    expect(queries.some((q) => q.includes('myschema.myapp_notify_changes'))).toBe(true)
+    expect(queries.some((q) => q.includes('"myschema"."myapp_notify_changes"'))).toBe(true)
     expect(queries.some((q) => q.includes("LISTEN \"myapp_changes\""))).toBe(true)
   })
 })

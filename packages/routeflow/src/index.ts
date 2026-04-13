@@ -2,18 +2,24 @@ import 'reflect-metadata'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Fastify, { FastifyInstance } from 'fastify'
-import type { AppOptions, Context, ReactiveEndpoint } from './core/types.js'
-import { ROUTE_METADATA, routeFnStore } from './core/decorator/route.js'
-import { REACTIVE_METADATA, reactiveFnStore } from './core/decorator/reactive.js'
+import type { AppOptions, Context, Middleware, ReactiveEndpoint } from './core/types.js'
+import { routeFnStore } from './core/decorator/route.js'
+import { reactiveFnStore } from './core/decorator/reactive.js'
+import { guardFnStore, GUARD_METADATA } from './core/decorator/guard.js'
 import type { RouteMetadata, ReactiveOptions } from './core/types.js'
 import { ReactiveEngine } from './core/reactive/engine.js'
 import { WebSocketTransport } from './core/transport/websocket-transport.js'
 import { SseTransport } from './core/transport/sse-transport.js'
 import { ReactiveApiError } from './core/errors.js'
+import { ROUTE_METADATA } from './core/decorator/route.js'
+import { REACTIVE_METADATA } from './core/decorator/reactive.js'
+
+// ── Public API ──────────────────────────────────────────────────────────────
 
 export { Route } from './core/decorator/route.js'
 export { Reactive } from './core/decorator/reactive.js'
-export { ReactiveApiError } from './core/errors.js'
+export { Guard } from './core/decorator/guard.js'
+export { ReactiveApiError, badRequest, unauthorized, forbidden, notFound } from './core/errors.js'
 export {
   SUPPORTED_DATABASES,
   getDatabaseSupport,
@@ -25,9 +31,11 @@ export type {
   ChangeEvent,
   DatabaseAdapter,
   TableStore,
+  Middleware,
   ReactiveOptions,
   AppOptions,
   HttpMethod,
+  CorsOrigin,
 } from './core/types.js'
 export type {
   DatabaseCategory,
@@ -45,7 +53,11 @@ export type {
   PollingReadResult,
 } from './core/adapter/index.js'
 
+// ── ReactiveApp ─────────────────────────────────────────────────────────────
+
 type AnyTransport = WebSocketTransport | SseTransport
+
+const isProd = process.env['NODE_ENV'] === 'production'
 
 /**
  * Main application class. Use `createApp()` to instantiate.
@@ -59,33 +71,125 @@ export class ReactiveApp {
   private readonly reactivePatterns: string[] = []
   /** All registered routes (for .routeflow/info.json) */
   private readonly registeredRoutes: Array<{ method: string; path: string; reactive: boolean }> = []
+  /** Global middleware stack — runs before every route handler */
+  private readonly middlewares: Middleware[] = []
 
   constructor(options: AppOptions) {
     this.options = {
       transport: 'websocket',
       port: 3000,
+      cors: true,
+      bodyLimit: 1_048_576, // 1 MiB
+      logger: false,
       ...options,
     }
-    this.fastify = Fastify({ logger: false })
+
+    this.fastify = Fastify({
+      logger: this.options.logger,
+      bodyLimit: this.options.bodyLimit,
+    })
+
     this.engine = new ReactiveEngine(this.options.adapter)
 
-    // Register a global error handler that serialises ReactiveApiError properly
+    // ── CORS ────────────────────────────────────────────────────────────────
+    if (this.options.cors !== false) {
+      const origin = this.options.cors === true ? '*' : this.options.cors
+      this.fastify.addHook('onSend', async (_req, reply) => {
+        const requestOrigin = _req.headers['origin']
+        if (!requestOrigin) return
+
+        if (origin === '*') {
+          void reply.header('Access-Control-Allow-Origin', '*')
+        } else if (Array.isArray(origin)) {
+          if (origin.includes(requestOrigin)) {
+            void reply.header('Access-Control-Allow-Origin', requestOrigin)
+            void reply.header('Vary', 'Origin')
+          }
+        } else if (origin === requestOrigin) {
+          void reply.header('Access-Control-Allow-Origin', requestOrigin)
+          void reply.header('Vary', 'Origin')
+        }
+        void reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
+        void reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+      })
+
+      // Handle preflight
+      this.fastify.options('*', async (_req, reply) => {
+        const requestOrigin = _req.headers['origin']
+        if (requestOrigin) {
+          if (origin === '*') {
+            void reply.header('Access-Control-Allow-Origin', '*')
+          } else if (Array.isArray(origin) && origin.includes(requestOrigin)) {
+            void reply.header('Access-Control-Allow-Origin', requestOrigin)
+          } else if (origin === requestOrigin) {
+            void reply.header('Access-Control-Allow-Origin', requestOrigin)
+          }
+        }
+        void reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
+        void reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        void reply.header('Access-Control-Max-Age', '86400')
+        return reply.status(204).send()
+      })
+    }
+
+    // ── Error handler ────────────────────────────────────────────────────────
     this.fastify.setErrorHandler((error, _req, reply) => {
       if (error instanceof ReactiveApiError) {
-        const status = (error as ReactiveApiError & { statusCode?: number }).statusCode ?? 500
-        reply.status(status).send({ error: error.code, message: error.message })
-      } else {
-        reply.status(500).send({ error: 'INTERNAL_ERROR', message: error.message })
+        return reply.status(error.statusCode).send({
+          error: error.code,
+          message: error.message,
+        })
       }
+      // Never leak internal error details in production
+      const message = isProd ? 'Internal server error' : (error.message ?? 'Unknown error')
+      return reply.status(error.statusCode ?? 500).send({
+        error: 'INTERNAL_ERROR',
+        message,
+      })
     })
   }
 
+  // ── Middleware ─────────────────────────────────────────────────────────────
+
   /**
-   * Register a controller class. Scans its methods for @Route and @Reactive
-   * decorators and registers HTTP routes and reactive endpoints accordingly.
+   * Add a global middleware that runs before every HTTP route handler.
+   *
+   * Middlewares run in registration order. Call `next()` to continue the chain.
+   * Throw a `ReactiveApiError` (or its convenience factories) to abort.
+   *
+   * @example
+   * ```ts
+   * import { createApp, unauthorized } from 'routeflow-api'
+   *
+   * const app = createApp({ adapter, port: 3000 })
+   *
+   * // Auth middleware
+   * app.use(async (ctx, next) => {
+   *   if (!ctx.headers['authorization']) throw unauthorized()
+   *   await next()
+   * })
+   *
+   * // Logging middleware
+   * app.use(async (ctx, next) => {
+   *   const start = Date.now()
+   *   await next()
+   *   console.log(`${ctx.params} — ${Date.now() - start}ms`)
+   * })
+   * ```
+   */
+  use(middleware: Middleware): this {
+    this.middlewares.push(middleware)
+    return this
+  }
+
+  // ── Registration ───────────────────────────────────────────────────────────
+
+  /**
+   * Register a controller class. Scans its methods for @Route, @Reactive, and
+   * @Guard decorators and registers HTTP routes and reactive endpoints accordingly.
    *
    * @param ControllerClass - A class constructor whose methods may be decorated
-   *                          with @Route and/or @Reactive.
+   *                          with @Route and/or @Reactive and/or @Guard.
    */
   register(ControllerClass: new () => object): this {
     const instance = new ControllerClass()
@@ -108,6 +212,12 @@ export class ReactiveApp {
         reactiveFnStore.get(fn) ??
         (Reflect.getMetadata(REACTIVE_METADATA, proto, methodName) as ReactiveOptions | undefined)
 
+      // Per-route guards (from @Guard decorator)
+      const routeGuards: Middleware[] =
+        guardFnStore.get(fn) ??
+        (Reflect.getMetadata(GUARD_METADATA, proto, methodName) as Middleware[] | undefined) ??
+        []
+
       const handler = (instance as Record<string, unknown>)[methodName] as (
         ctx: Context,
       ) => Promise<unknown>
@@ -123,12 +233,19 @@ export class ReactiveApp {
             body: req.body,
             headers: req.headers as Record<string, string>,
           }
+
           try {
+            // Run global middlewares then route guards in order
+            await runChain([...this.middlewares, ...routeGuards], ctx)
             const result = await handler.call(instance, ctx)
             return reply.send(result)
           } catch (err) {
             if (err instanceof ReactiveApiError) throw err
-            const msg = err instanceof Error ? err.message : String(err)
+            const msg = isProd
+              ? 'Internal server error'
+              : err instanceof Error
+                ? err.message
+                : String(err)
             throw new ReactiveApiError('HANDLER_ERROR', msg)
           }
         },
@@ -151,13 +268,20 @@ export class ReactiveApp {
     return this
   }
 
+  // ── Fastify escape hatch ───────────────────────────────────────────────────
+
   /**
    * Access the underlying Fastify instance for supplemental routes such as
    * health checks, static assets, or demo pages.
+   *
+   * @remarks This is an escape hatch — prefer `app.use()` and `@Guard()` for
+   * cross-cutting concerns whenever possible.
    */
   getFastify(): FastifyInstance {
     return this.fastify
   }
+
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   /**
    * Start the HTTP server.
@@ -226,12 +350,39 @@ export class ReactiveApp {
   }
 }
 
+// ── Middleware chain runner ─────────────────────────────────────────────────
+
+async function runChain(middlewares: Middleware[], ctx: Context): Promise<void> {
+  let i = 0
+  const next = async (): Promise<void> => {
+    if (i >= middlewares.length) return
+    await middlewares[i++](ctx, next)
+  }
+  await next()
+}
+
+// ── createApp factory ───────────────────────────────────────────────────────
+
 /**
  * Create a new RouteFlow application.
  *
  * @example
  * ```ts
- * const app = createApp({ adapter: new MemoryAdapter(), port: 3000 })
+ * import { createApp, MemoryAdapter, unauthorized } from 'routeflow-api'
+ *
+ * const app = createApp({
+ *   adapter: new MemoryAdapter(),
+ *   port: 3000,
+ *   cors: 'https://myapp.com',  // or true for all origins
+ *   bodyLimit: 512_000,         // 500 KB
+ * })
+ *
+ * // Global auth middleware
+ * app.use(async (ctx, next) => {
+ *   if (!ctx.headers['authorization']) throw unauthorized()
+ *   await next()
+ * })
+ *
  * app.register(MyController)
  * await app.listen()
  * ```

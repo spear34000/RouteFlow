@@ -46,6 +46,33 @@ export class ReactiveEngine {
 
   subscribe(clientId: string, path: string, ctx: Context, pushFn: PushFn): void {
     this.subscriptions.set(clientId, { path, ctx, pushFn })
+
+    // Immediately push current state so the client has data without waiting for
+    // the first DB change event (eliminates the separate get() + subscribe() dance).
+    for (const endpoint of this.endpoints) {
+      if (pathMatchesPattern(path, endpoint.routePath)) {
+        void this.initialPush(clientId, endpoint)
+      }
+    }
+  }
+
+  /**
+   * Executes the initial push for a newly subscribed client.
+   * Checks subscription existence both before AND after the async handler —
+   * the client may unsubscribe while the handler is running.
+   */
+  private async initialPush(clientId: string, endpoint: ReactiveEndpoint): Promise<void> {
+    const sub = this.subscriptions.get(clientId)
+    if (!sub) return
+    try {
+      const data = await endpoint.handler(sub.ctx)
+      // Re-check after awaiting — unsubscribe() may have run while handler was in flight
+      if (!this.subscriptions.has(clientId)) return
+      sub.pushFn(sub.path, data)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[RouteFlow] Initial push error on ${sub.path}: ${message}`)
+    }
   }
 
   unsubscribe(clientId: string): void {

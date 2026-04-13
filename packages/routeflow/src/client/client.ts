@@ -1,5 +1,6 @@
 import type {
   ClientOptions,
+  SubscribeOptions,
   SubscriptionCallback,
   Unsubscribe,
 } from './types.js'
@@ -95,22 +96,35 @@ export class ReactiveClient {
   /**
    * Subscribe to real-time updates pushed by the server for `path`.
    *
+   * The server sends the current state immediately on subscription, so you
+   * no longer need a separate `get()` call before `subscribe()`.
+   *
    * Uses WebSocket or SSE depending on the `transport` option passed to `createClient`.
    *
    * @param path     - The reactive endpoint path (e.g. '/orders/123/live')
    * @param callback - Invoked with the latest data on each push
-   * @param query    - Optional query params forwarded in the subscription request
+   * @param options  - Optional query params, per-subscription error handler, close handler
    * @returns An unsubscribe function — call it to stop receiving updates.
+   *
+   * @example
+   * ```ts
+   * const unsub = client.subscribe<Item[]>('/items/live', setItems, {
+   *   query: { category: 'fruit' },
+   *   onError: (err) => console.error('subscription error:', err),
+   *   onClose: () => console.warn('connection lost'),
+   * })
+   * ```
    */
   subscribe<T>(
     path: string,
     callback: SubscriptionCallback<T>,
-    query?: Record<string, string>,
+    options?: SubscribeOptions<T>,
   ): Unsubscribe {
+    const { query, onError, onClose } = options ?? {}
     if (this.options.transport === 'sse') {
       return this.subscribeSSE<T>(path, callback, query)
     }
-    return this.subscribeWS<T>(path, callback, query)
+    return this.subscribeWS<T>(path, callback, query, onClose, onError)
   }
 
   /**
@@ -134,6 +148,8 @@ export class ReactiveClient {
     path: string,
     callback: SubscriptionCallback<T>,
     query?: Record<string, string>,
+    onClose?: () => void,
+    onError?: (error: { code: string; message: string }) => void,
   ): Unsubscribe {
     if (!this.socket) {
       this.socket = new ReactiveWebSocket(
@@ -142,7 +158,7 @@ export class ReactiveClient {
         this.options.onError,
       )
     }
-    return this.socket.subscribe<T>(path, callback, query)
+    return this.socket.subscribe<T>(path, callback, query, onClose, onError)
   }
 
   private subscribeSSE<T>(

@@ -16,8 +16,35 @@
  * re-query after receiving the event.
  */
 
+// ── Identifier safety ────────────────────────────────────────────────────────
+
+/**
+ * Validate that a SQL identifier (schema, table, prefix, trigger name) contains
+ * only safe characters. Prevents SQL injection via identifier interpolation.
+ *
+ * Allowed: letters, digits, underscore, dollar sign (standard SQL identifier chars).
+ * Max length: 63 chars (PostgreSQL limit).
+ */
+function assertSafeIdentifier(value: string, label: string): void {
+  if (!/^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(value)) {
+    throw new Error(
+      `[RouteFlow] Unsafe SQL identifier for ${label}: "${value}". ` +
+        'Identifiers must start with a letter or underscore and contain only letters, digits, underscores, or dollar signs (max 63 chars).',
+    )
+  }
+}
+
+/** Double-quote a validated identifier (handles reserved words and case). */
+function qi(identifier: string, label: string): string {
+  assertSafeIdentifier(identifier, label)
+  return `"${identifier}"`
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
 /** Channel name used for LISTEN/NOTIFY — one shared channel for all tables. */
 export function notifyChannel(prefix: string): string {
+  assertSafeIdentifier(prefix, 'prefix')
   return `${prefix}_changes`
 }
 
@@ -26,11 +53,12 @@ export function notifyChannel(prefix: string): string {
  * The function encodes NEW/OLD as JSON and notifies the channel.
  */
 export function createTriggerFunctionSQL(schema: string, prefix: string): string {
-  const fnName = `${schema}.${prefix}_notify_changes`
+  const qSchema = qi(schema, 'schema')
+  const qFn = `${qSchema}.${qi(`${prefix}_notify_changes`, 'function name')}`
   const channel = notifyChannel(prefix)
 
   return `
-CREATE OR REPLACE FUNCTION ${fnName}()
+CREATE OR REPLACE FUNCTION ${qFn}()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -85,19 +113,21 @@ export function createTableTriggerSQL(
   prefix: string,
   table: string,
 ): string {
-  const triggerName = `${prefix}_notify_${table}`
-  const fnName = `${schema}.${prefix}_notify_changes`
+  const qSchema = qi(schema, 'schema')
+  const qTable = qi(table, 'table')
+  const triggerName = qi(`${prefix}_notify_${table}`, 'trigger name')
+  const fnName = `${qSchema}.${qi(`${prefix}_notify_changes`, 'function name')}`
 
   return `
 DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
-    WHERE tgname = '${triggerName}'
-      AND tgrelid = '${schema}.${table}'::regclass
+    WHERE tgname = '${prefix}_notify_${table}'
+      AND tgrelid = ${qSchema}.${qTable}::regclass::oid
   ) THEN
     CREATE TRIGGER ${triggerName}
-    AFTER INSERT OR UPDATE OR DELETE ON ${schema}.${table}
+    AFTER INSERT OR UPDATE OR DELETE ON ${qSchema}.${qTable}
     FOR EACH ROW EXECUTE FUNCTION ${fnName}();
   END IF;
 END;
@@ -113,13 +143,17 @@ export function dropTableTriggerSQL(
   prefix: string,
   table: string,
 ): string {
-  const triggerName = `${prefix}_notify_${table}`
-  return `DROP TRIGGER IF EXISTS ${triggerName} ON ${schema}.${table};`
+  const qSchema = qi(schema, 'schema')
+  const qTable = qi(table, 'table')
+  const triggerName = qi(`${prefix}_notify_${table}`, 'trigger name')
+  return `DROP TRIGGER IF EXISTS ${triggerName} ON ${qSchema}.${qTable};`
 }
 
 /**
  * SQL to drop the shared trigger function (used on full adapter teardown).
  */
 export function dropTriggerFunctionSQL(schema: string, prefix: string): string {
-  return `DROP FUNCTION IF EXISTS ${schema}.${prefix}_notify_changes();`
+  const qSchema = qi(schema, 'schema')
+  const qFn = qi(`${prefix}_notify_changes`, 'function name')
+  return `DROP FUNCTION IF EXISTS ${qSchema}.${qFn}();`
 }

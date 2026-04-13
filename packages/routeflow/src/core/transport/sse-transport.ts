@@ -47,7 +47,13 @@ export class SseTransport {
         throw new ReactiveApiError('SSE_MISSING_PATH', 'Query param "path" is required')
       }
 
-      const decodedPath = decodeURIComponent(path)
+      let decodedPath: string
+      try {
+        decodedPath = decodeURIComponent(path)
+      } catch {
+        reply.code(400)
+        throw new ReactiveApiError('SSE_INVALID_PATH', 'Query param "path" contains invalid percent-encoding')
+      }
       const pattern = this.routePatterns.find((p) => pathMatchesPattern(decodedPath, p))
 
       if (!pattern) {
@@ -59,8 +65,16 @@ export class SseTransport {
       }
 
       const params = extractParams(decodedPath, pattern)
-      const clientQuery = { ...query }
-      delete clientQuery['path']
+
+      // Build a clean query object — strip 'path' and guard against prototype
+      // pollution via keys like '__proto__', 'constructor', 'prototype'.
+      const dangerousKeys = new Set(['__proto__', 'constructor', 'prototype'])
+      const clientQuery: Record<string, string> = Object.create(null)
+      for (const [k, v] of Object.entries(query)) {
+        if (k !== 'path' && !dangerousKeys.has(k) && typeof v === 'string') {
+          clientQuery[k] = v
+        }
+      }
 
       const ctx: Context = {
         params,

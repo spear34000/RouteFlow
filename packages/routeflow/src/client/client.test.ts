@@ -262,7 +262,7 @@ describe('ReactiveClient — subscribe', () => {
 
   it('sends subscribe with query params', () => {
     const cb = vi.fn()
-    client.subscribe('/orders/live', cb, { userId: '42' })
+    client.subscribe('/orders/live', cb, { query: { userId: '42' } })
     getWs().open()
     const msg = JSON.parse(getWs().sent[0]!)
     expect(msg.query).toEqual({ userId: '42' })
