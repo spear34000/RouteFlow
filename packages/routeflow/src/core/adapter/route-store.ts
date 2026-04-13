@@ -1,14 +1,7 @@
 import type { ChangeEvent, DatabaseAdapter, TableStore } from '../types.js'
 import { SQLiteStore } from './sqlite-store.js'
 
-// ────────────────────────────────────────────────────────────────────────────
-// Schema definition types
-// ────────────────────────────────────────────────────────────────────────────
-
-/** Supported column types for RouteStore tables. */
 export type ColumnType = 'integer' | 'text' | 'real' | 'json'
-
-/** Schema definition: maps column names to their types. */
 export type SchemaDefinition = Record<string, ColumnType>
 
 /** TypeScript row type inferred from a schema definition. */
@@ -24,12 +17,8 @@ export type InferRow<S extends SchemaDefinition> = {
         : string
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// RouteTable — high-level table API
-// ────────────────────────────────────────────────────────────────────────────
-
 export interface ListOptions<S extends SchemaDefinition> {
-  /** Filter rows by matching column values. */
+  /** Filter rows by exact column value matches. */
   where?: Partial<InferRow<S>>
   /** Sort by a column. Defaults to `'id'`. */
   orderBy?: keyof InferRow<S>
@@ -41,7 +30,6 @@ export interface ListOptions<S extends SchemaDefinition> {
 
 /**
  * High-level CRUD interface for a single SQLite table.
- *
  * Created via `RouteStore.table()` — do not instantiate directly.
  */
 export class RouteTable<S extends SchemaDefinition> implements TableStore<InferRow<S>> {
@@ -61,21 +49,38 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
     this.createTable()
   }
 
+  // ── Low-level helpers ─────────────────────────────────────────────────────
+
+  // Single escape hatch for node:sqlite's untyped spread API.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private sql(stmt: ReturnType<SQLiteStore['prepare']>): any {
+    return stmt
+  }
+
+  private run(query: string, params: unknown[]): { lastInsertRowid: number; changes: number } {
+    return this.sql(this.db.prepare(query)).run(...params)
+  }
+
+  private getOne(query: string, params: unknown[]): Record<string, unknown> | undefined {
+    return this.sql(this.db.prepare(query)).get(...params)
+  }
+
+  private getAll(query: string, params: unknown[]): Record<string, unknown>[] {
+    return this.sql(this.db.prepare(query)).all(...params)
+  }
+
   // ── Schema bootstrap ──────────────────────────────────────────────────────
 
   private createTable(): void {
     const cols = Object.entries(this.schema)
-      .map(([col, type]) => {
-        const sqlType = type === 'json' ? 'TEXT' : type.toUpperCase()
-        return `${col} ${sqlType}`
-      })
+      .map(([col, type]) => `${col} ${type === 'json' ? 'TEXT' : type.toUpperCase()}`)
       .join(', ')
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS "${this.tableName}" (id INTEGER PRIMARY KEY AUTOINCREMENT, ${cols})`,
     )
   }
 
-  // ── Serialization helpers ─────────────────────────────────────────────────
+  // ── Serialization ─────────────────────────────────────────────────────────
 
   private serialize(data: Record<string, unknown>): Record<string, unknown> {
     const out: Record<string, unknown> = {}
@@ -106,24 +111,24 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
    */
   async list(options: ListOptions<S> = {}): Promise<InferRow<S>[]> {
     const { where, orderBy = 'id', order = 'asc', limit } = options
-    const parts: string[] = []
-    const values: unknown[] = []
+    const params: unknown[] = []
+    const whereParts: string[] = []
 
     if (where) {
       for (const [k, v] of Object.entries(where)) {
-        parts.push(`${k} = ?`)
-        values.push(this.jsonCols.has(k) ? JSON.stringify(v) : v)
+        whereParts.push(`${k} = ?`)
+        params.push(this.jsonCols.has(k) ? JSON.stringify(v) : v)
       }
     }
 
-    const whereClause = parts.length ? `WHERE ${parts.join(' AND ')}` : ''
-    const orderClause = `ORDER BY ${String(orderBy)} ${order.toUpperCase()}`
-    const limitClause = limit != null ? `LIMIT ${limit}` : ''
+    const clauses = [
+      `SELECT * FROM "${this.tableName}"`,
+      whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '',
+      `ORDER BY ${String(orderBy)} ${order.toUpperCase()}`,
+      limit != null ? `LIMIT ${limit}` : '',
+    ].filter(Boolean)
 
-    const sql = `SELECT * FROM "${this.tableName}" ${whereClause} ${orderClause} ${limitClause}`.trim()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rows = (this.db.prepare(sql) as any).all(...values) as Record<string, unknown>[]
-    return rows.map((r) => this.deserialize(r))
+    return this.getAll(clauses.join(' '), params).map((r) => this.deserialize(r))
   }
 
   /**
@@ -135,9 +140,7 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
    * ```
    */
   async get(id: number): Promise<InferRow<S> | null> {
-    const row = this.db
-      .prepare(`SELECT * FROM "${this.tableName}" WHERE id = ?`)
-      .get(id) as Record<string, unknown> | undefined
+    const row = this.getOne(`SELECT * FROM "${this.tableName}" WHERE id = ?`, [id])
     return row ? this.deserialize(row) : null
   }
 
@@ -151,16 +154,13 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
    */
   async create(data: Omit<InferRow<S>, 'id'>): Promise<InferRow<S>> {
     const serialized = this.serialize(data as Record<string, unknown>)
-    const cols = Object.keys(serialized).join(', ')
-    const placeholders = Object.keys(serialized)
-      .map(() => '?')
-      .join(', ')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = (this.db.prepare(`INSERT INTO "${this.tableName}" (${cols}) VALUES (${placeholders})`) as any).run(
-      ...Object.values(serialized),
-    ) as { lastInsertRowid: number }
-
-    const created = (await this.get(result.lastInsertRowid))!
+    const keys = Object.keys(serialized)
+    const result = this.run(
+      `INSERT INTO "${this.tableName}" (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`,
+      Object.values(serialized),
+    )
+    // Construct from serialized data + new id — avoids a round-trip SELECT.
+    const created = this.deserialize({ id: result.lastInsertRowid, ...serialized })
     this.emit({ table: this.tableName, operation: 'INSERT', newRow: created, oldRow: null, timestamp: Date.now() })
     return created
   }
@@ -179,16 +179,15 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
     if (!old) return null
 
     const serialized = this.serialize(data as Record<string, unknown>)
-    const setClauses = Object.keys(serialized)
-      .map((k) => `${k} = ?`)
-      .join(', ')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(this.db.prepare(`UPDATE "${this.tableName}" SET ${setClauses} WHERE id = ?`) as any).run(
-      ...Object.values(serialized),
-      id,
+    const setClauses = Object.keys(serialized).map((k) => `${k} = ?`).join(', ')
+    // RETURNING * avoids a second SELECT round-trip.
+    const row = this.getOne(
+      `UPDATE "${this.tableName}" SET ${setClauses} WHERE id = ? RETURNING *`,
+      [...Object.values(serialized), id],
     )
+    if (!row) return null
 
-    const updated = (await this.get(id))!
+    const updated = this.deserialize(row)
     this.emit({ table: this.tableName, operation: 'UPDATE', newRow: updated, oldRow: old, timestamp: Date.now() })
     return updated
   }
@@ -203,46 +202,36 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
    * ```
    */
   async delete(id: number): Promise<boolean> {
-    const old = await this.get(id)
-    if (!old) return false
+    // RETURNING * avoids a prior SELECT round-trip to get the old row.
+    const row = this.getOne(`DELETE FROM "${this.tableName}" WHERE id = ? RETURNING *`, [id])
+    if (!row) return false
 
-    this.db.prepare(`DELETE FROM "${this.tableName}" WHERE id = ?`).run(id)
+    const old = this.deserialize(row)
     this.emit({ table: this.tableName, operation: 'DELETE', newRow: null, oldRow: old, timestamp: Date.now() })
     return true
   }
 
   /**
    * Seed the table with initial rows if it is empty.
+   * Runs at startup before subscribers attach — does not emit change events.
    *
    * @example
    * ```ts
-   * await items.seed([
-   *   { name: 'Apple', createdAt: '2026-01-01T00:00:00.000Z' },
-   * ])
+   * await items.seed([{ name: 'Apple', createdAt: '2026-01-01T00:00:00.000Z' }])
    * ```
    */
   async seed(rows: Omit<InferRow<S>, 'id'>[]): Promise<void> {
-    const count = (
-      this.db.prepare(`SELECT COUNT(*) as n FROM "${this.tableName}"`).get() as { n: number }
-    ).n
-    if (count > 0) return
+    const count = (this.getOne(`SELECT COUNT(*) as n FROM "${this.tableName}"`, []) as { n: number }).n
+    if (count > 0 || rows.length === 0) return
 
-    // Insert directly without emitting change events —
-    // seed runs at startup before any subscribers are attached.
-    const cols = Object.keys(rows[0] ?? {}).join(', ')
-    const placeholders = Object.keys(rows[0] ?? {}).map(() => '?').join(', ')
-    const stmt = this.db.prepare(`INSERT INTO "${this.tableName}" (${cols}) VALUES (${placeholders})`)
+    const keys = Object.keys(this.serialize(rows[0] as Record<string, unknown>))
+    const sql = `INSERT INTO "${this.tableName}" (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`
+    const stmt = this.db.prepare(sql)
     for (const row of rows) {
-      const serialized = this.serialize(row as Record<string, unknown>)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ;(stmt as any).run(...Object.values(serialized))
+      this.sql(stmt).run(...Object.values(this.serialize(row as Record<string, unknown>)))
     }
   }
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// RouteStore — DatabaseAdapter + table factory
-// ────────────────────────────────────────────────────────────────────────────
 
 /**
  * File-based SQLite store that implements `DatabaseAdapter`.
@@ -259,23 +248,17 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
  * import { RouteStore } from 'routeflow-api/sqlite'
  * import { createApp }  from 'routeflow-api'
  *
- * const db = new RouteStore('./data/app.db')
- *
- * const items = db.table('items', {
- *   name:      'text',
- *   createdAt: 'text',
- * })
+ * const db    = new RouteStore('./data/app.db')
+ * const items = db.table('items', { name: 'text', createdAt: 'text' })
  *
  * await items.seed([{ name: 'Apple', createdAt: new Date().toISOString() }])
  *
- * // db IS the adapter — pass directly to createApp
  * const app = createApp({ adapter: db, port: 3000 })
  * ```
  */
 export class RouteStore implements DatabaseAdapter {
   private readonly sql: SQLiteStore
   private readonly listeners = new Map<string, Set<(event: ChangeEvent) => void>>()
-  private connected = false
 
   /**
    * @param dbPath - Path to the SQLite file.
@@ -296,9 +279,9 @@ export class RouteStore implements DatabaseAdapter {
    * @example
    * ```ts
    * const tasks = db.table('tasks', {
-   *   title:     'text',
-   *   done:      'integer',   // 0 | 1
-   *   metadata:  'json',      // auto-serialised JS object
+   *   title:    'text',
+   *   done:     'integer',  // 0 | 1
+   *   metadata: 'json',     // auto-serialised JS object
    * })
    * ```
    */
@@ -306,15 +289,10 @@ export class RouteStore implements DatabaseAdapter {
     return new RouteTable(this.sql, name, schema, (evt) => this.dispatchEvent(evt))
   }
 
-  // ── DatabaseAdapter ───────────────────────────────────────────────────────
-
-  async connect(): Promise<void> {
-    this.connected = true
-  }
+  async connect(): Promise<void> {}
 
   async disconnect(): Promise<void> {
     this.sql.close()
-    this.connected = false
   }
 
   onChange(table: string, callback: (event: ChangeEvent) => void): () => void {
@@ -322,12 +300,6 @@ export class RouteStore implements DatabaseAdapter {
     this.listeners.get(table)!.add(callback)
     return () => this.listeners.get(table)?.delete(callback)
   }
-
-  get isConnected(): boolean {
-    return this.connected
-  }
-
-  // ── Internal ──────────────────────────────────────────────────────────────
 
   private dispatchEvent(event: ChangeEvent): void {
     const cbs = this.listeners.get(event.table)

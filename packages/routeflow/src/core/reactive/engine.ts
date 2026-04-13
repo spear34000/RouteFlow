@@ -5,14 +5,13 @@ import type {
   PushFn,
   ReactiveEndpoint,
 } from '../types.js'
-import { ReactiveApiError } from '../errors.js'
+
+// Compiled path-pattern regexes are reused across all ChangeEvents.
+const patternRegexCache = new Map<string, RegExp>()
 
 interface Subscription {
-  /** The concrete path the client subscribed to (e.g. '/orders/123/live') */
   path: string
-  /** Context built from the subscribed path */
   ctx: Context
-  /** Function to call when a push is ready */
   pushFn: PushFn
 }
 
@@ -28,110 +27,69 @@ interface Subscription {
 export class ReactiveEngine {
   private readonly endpoints: ReactiveEndpoint[] = []
   /** clientId → Subscription */
-  private readonly subscriptions: Map<string, Subscription> = new Map()
+  private readonly subscriptions = new Map<string, Subscription>()
   /** table → adapter unsubscribe fn */
-  private readonly tableWatchers: Map<string, () => void> = new Map()
-  /** "clientId:path" → debounce timer id */
-  private readonly debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
+  private readonly tableWatchers = new Map<string, () => void>()
+  /** timerKey → timer */
+  private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** clientId → Set of timerKeys — O(1) cleanup on disconnect */
+  private readonly clientTimers = new Map<string, Set<string>>()
 
   constructor(private readonly adapter: DatabaseAdapter) {}
 
-  /**
-   * Register a reactive endpoint so the engine can fan-out pushes to subscribers.
-   */
   registerEndpoint(endpoint: ReactiveEndpoint): void {
     this.endpoints.push(endpoint)
-
-    const tables = Array.isArray(endpoint.options.watch)
-      ? endpoint.options.watch
-      : [endpoint.options.watch]
-
-    for (const table of tables) {
+    for (const table of normalizeWatch(endpoint.options.watch)) {
       this.setupTableWatcher(table)
     }
   }
 
-  /**
-   * Subscribe a WebSocket client to a path.
-   * When the watched table(s) change and the filter passes, pushFn is called.
-   *
-   * @param clientId - Unique identifier for the client connection
-   * @param path     - The concrete path the client subscribed to
-   * @param ctx      - Context built from the subscribed path
-   * @param pushFn   - Callback to deliver data to the client
-   */
   subscribe(clientId: string, path: string, ctx: Context, pushFn: PushFn): void {
     this.subscriptions.set(clientId, { path, ctx, pushFn })
   }
 
-  /**
-   * Remove a client's subscription and clean up any pending debounce timers.
-   */
   unsubscribe(clientId: string): void {
     this.subscriptions.delete(clientId)
 
-    // Clean up any pending debounce timers for this client
-    for (const key of this.debounceTimers.keys()) {
-      if (key.startsWith(`${clientId}:`)) {
+    const timerKeys = this.clientTimers.get(clientId)
+    if (timerKeys) {
+      for (const key of timerKeys) {
         clearTimeout(this.debounceTimers.get(key))
         this.debounceTimers.delete(key)
       }
+      this.clientTimers.delete(clientId)
     }
   }
 
-  /**
-   * Tear down all table watchers. Call this when the app shuts down.
-   */
   destroy(): void {
-    for (const unsubscribe of this.tableWatchers.values()) {
-      unsubscribe()
-    }
+    for (const unsubscribe of this.tableWatchers.values()) unsubscribe()
     this.tableWatchers.clear()
-
-    for (const timer of this.debounceTimers.values()) {
-      clearTimeout(timer)
-    }
+    for (const timer of this.debounceTimers.values()) clearTimeout(timer)
     this.debounceTimers.clear()
+    this.clientTimers.clear()
   }
-
-  // ---------------------------------------------------------------------------
-  // Private helpers
-  // ---------------------------------------------------------------------------
 
   private setupTableWatcher(table: string): void {
-    if (this.tableWatchers.has(table)) return // already watching
-
-    const unsubscribe = this.adapter.onChange(table, (event) => {
-      this.onChangeEvent(event)
-    })
-    this.tableWatchers.set(table, unsubscribe)
+    if (this.tableWatchers.has(table)) return
+    this.tableWatchers.set(table, this.adapter.onChange(table, (e) => this.onChangeEvent(e)))
   }
 
   private onChangeEvent(event: ChangeEvent): void {
-    // Find endpoints that watch this table
-    const matchingEndpoints = this.endpoints.filter((ep) => {
-      const tables = Array.isArray(ep.options.watch)
-        ? ep.options.watch
-        : [ep.options.watch]
-      return tables.includes(event.table)
-    })
+    for (const endpoint of this.endpoints) {
+      if (!normalizeWatch(endpoint.options.watch).includes(event.table)) continue
 
-    for (const endpoint of matchingEndpoints) {
-      // Find all subscribers that are on this endpoint's route path
       for (const [clientId, sub] of this.subscriptions) {
         if (!pathMatchesPattern(sub.path, endpoint.routePath)) continue
 
-        // Apply optional filter
         if (endpoint.options.filter) {
           try {
             if (!endpoint.options.filter(event, sub.ctx)) continue
-          } catch (err) {
-            // Filter threw — skip this subscriber rather than crashing
+          } catch {
             continue
           }
         }
 
-        this.schedulePush(clientId, endpoint, sub, event)
+        this.schedulePush(clientId, endpoint, sub)
       }
     }
   }
@@ -140,7 +98,6 @@ export class ReactiveEngine {
     clientId: string,
     endpoint: ReactiveEndpoint,
     sub: Subscription,
-    _event: ChangeEvent,
   ): void {
     const debounceMs = endpoint.options.debounce
 
@@ -151,42 +108,51 @@ export class ReactiveEngine {
 
       const timer = setTimeout(() => {
         this.debounceTimers.delete(timerKey)
-        this.executePush(endpoint, sub)
+        this.clientTimers.get(clientId)?.delete(timerKey)
+        void this.executePush(endpoint, sub)
       }, debounceMs)
 
       this.debounceTimers.set(timerKey, timer)
+      if (!this.clientTimers.has(clientId)) this.clientTimers.set(clientId, new Set())
+      this.clientTimers.get(clientId)!.add(timerKey)
     } else {
-      this.executePush(endpoint, sub)
+      void this.executePush(endpoint, sub)
     }
   }
 
-  private executePush(endpoint: ReactiveEndpoint, sub: Subscription): void {
-    endpoint.handler(sub.ctx).then(
-      (data) => sub.pushFn(sub.path, data),
-      (err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err)
-        throw new ReactiveApiError('HANDLER_ERROR', `Reactive handler failed: ${message}`)
-      },
-    )
+  private async executePush(endpoint: ReactiveEndpoint, sub: Subscription): Promise<void> {
+    try {
+      const data = await endpoint.handler(sub.ctx)
+      sub.pushFn(sub.path, data)
+    } catch (err: unknown) {
+      // Log the error but do not crash the server — the subscription stays alive.
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[RouteFlow] Reactive handler error on ${sub.path}: ${message}`)
+    }
   }
 }
 
-// ---------------------------------------------------------------------------
-// Path matching utility
-// ---------------------------------------------------------------------------
+/** Normalise `watch` to a guaranteed string array. */
+function normalizeWatch(watch: string | string[]): string[] {
+  return Array.isArray(watch) ? watch : [watch]
+}
 
 /**
  * Returns true if a concrete path matches a route pattern with named params.
+ * Compiled regexes are cached by pattern string.
  *
  * pathMatchesPattern('/orders/123/live', '/orders/:userId/live') → true
  * pathMatchesPattern('/orders/123/live', '/items/:id/live')      → false
  */
 export function pathMatchesPattern(concretePath: string, pattern: string): boolean {
-  const regexStr = pattern
-    .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // escape regex special chars except *
-    .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '([^/]+)') // :param → capture group
-
-  const regex = new RegExp(`^${regexStr}$`)
+  let regex = patternRegexCache.get(pattern)
+  if (!regex) {
+    const src = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '([^/]+)')
+    regex = new RegExp(`^${src}$`)
+    patternRegexCache.set(pattern, regex)
+  }
   return regex.test(concretePath)
 }
 
@@ -197,16 +163,14 @@ export function pathMatchesPattern(concretePath: string, pattern: string): boole
  */
 export function extractParams(concretePath: string, pattern: string): Record<string, string> {
   const paramNames: string[] = []
-  const regexStr = pattern
+  const src = pattern
     .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
     .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, name: string) => {
       paramNames.push(name)
       return '([^/]+)'
     })
 
-  const regex = new RegExp(`^${regexStr}$`)
-  const match = concretePath.match(regex)
+  const match = concretePath.match(new RegExp(`^${src}$`))
   if (!match) return {}
-
   return Object.fromEntries(paramNames.map((name, i) => [name, match[i + 1]]))
 }
