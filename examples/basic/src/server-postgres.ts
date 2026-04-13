@@ -3,7 +3,7 @@ import { createApp } from 'routeflow-api'
 import { PostgresAdapter } from 'routeflow-api/adapters/postgres'
 import type { TableStore } from 'routeflow-api'
 import { registerDemoUi } from './register-demo-ui.js'
-import { createItemController, seedItems, type Item } from './shared.js'
+import { ItemController, seedItems, type Item } from './shared.js'
 
 // ── PostgreSQL store (implements TableStore<Item>) ────────────────────────
 //
@@ -84,8 +84,7 @@ await store.seed(seedItems)
 // PostgresAdapter handles CDC via LISTEN/NOTIFY — same interface as any other adapter
 const adapter = new PostgresAdapter({ connectionString })
 
-// Same controller factory as SQLite — only the store and adapter wiring differ
-const ItemController = createItemController(store)
+// Same controller as SQLite — only the store and adapter wiring differ
 const app = createApp({ adapter, transport, port })
 
 registerDemoUi(app, {
@@ -93,7 +92,7 @@ registerDemoUi(app, {
   subtitle: '컨트롤러 코드는 SQLite 예제와 동일합니다. 어댑터와 스토어 연결만 다릅니다.',
   transport,
 })
-app.register(ItemController)
+app.register(new ItemController(store))
 await app.listen()
 
 console.log(`[postgres] Ready on http://localhost:${port} (${transport})`)

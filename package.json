@@ -11,6 +11,8 @@
     "example:build": "pnpm --filter routeflow-api build && tsc -p examples/basic/tsconfig.json --noEmit",
     "example:memory": "PORT=3000 pnpm exec tsx examples/basic/src/server-memory.ts",
     "example:memory:sse": "PORT=3001 ROUTEFLOW_TRANSPORT=sse pnpm exec tsx examples/basic/src/server-memory.ts",
+    "example:sqlite": "PORT=3004 DB_PATH=./data/routeflow.db pnpm exec tsx examples/basic/src/server-memory.ts",
+    "example:sqlite:sse": "PORT=3005 DB_PATH=./data/routeflow.db ROUTEFLOW_TRANSPORT=sse pnpm exec tsx examples/basic/src/server-memory.ts",
     "example:postgres": "PORT=3002 pnpm exec tsx examples/basic/src/server-postgres.ts",
     "example:postgres:sse": "PORT=3003 ROUTEFLOW_TRANSPORT=sse pnpm exec tsx examples/basic/src/server-postgres.ts",
     "example:client": "pnpm exec tsx examples/basic/src/client-demo.ts"
