@@ -229,6 +229,35 @@ describe('app.openapi()', () => {
   })
 })
 
+// ── openapi() lazy build — routes registered AFTER openapi() appear in spec ──
+
+describe('app.openapi() lazy spec build', () => {
+  let app: ReturnType<typeof createApp>
+  let baseUrl: string
+
+  beforeEach(async () => {
+    const storeA = makeStore()
+    const storeB = makeStore()
+    ;({ app, baseUrl } = await startApp((a) => {
+      a.flow('/alpha', storeA)
+        .openapi({ title: 'Lazy Test' })  // called before /beta is registered
+        .flow('/beta', storeB)            // registered AFTER openapi()
+    }))
+  })
+
+  afterEach(async () => { await app.close() })
+
+  it('spec includes routes registered before openapi()', async () => {
+    const spec  = await (await fetch(`${baseUrl}/openapi.json`)).json() as { paths: Record<string, unknown> }
+    expect(Object.keys(spec.paths)).toContain('/alpha')
+  })
+
+  it('spec includes routes registered after openapi()', async () => {
+    const spec  = await (await fetch(`${baseUrl}/openapi.json`)).json() as { paths: Record<string, unknown> }
+    expect(Object.keys(spec.paths)).toContain('/beta')
+  })
+})
+
 // ── rateLimit() ───────────────────────────────────────────────────────────────
 
 describe('rateLimit()', () => {

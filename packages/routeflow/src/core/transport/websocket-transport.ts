@@ -122,8 +122,9 @@ export class WebSocketTransport {
     const origin = req.headers['origin']
 
     // Non-browser clients (e.g. server-to-server) send no Origin header.
-    // Allow them unless cors is explicitly set to a restricted list/string.
-    if (!origin) return this.allowedOrigins === true
+    // Allow them when cors is not explicitly restricted (true = open policy already
+    // returned above; we reach here only for string/array/false).
+    if (!origin) return this.allowedOrigins !== false
 
     if (typeof this.allowedOrigins === 'string') {
       return origin === this.allowedOrigins

@@ -508,10 +508,22 @@ export class ReactiveApp {
    * ```
    */
   openapi(options: OpenAPIOptions = {}): this {
-    const spec = this.buildOpenAPISpec(options)
+    // Build the spec lazily on first request so routes registered *after*
+    // openapi() (e.g. via subsequent flow()/register() calls) are included.
+    let cachedSpec: Record<string, unknown> | null = null
+    const getSpec = () => {
+      if (!cachedSpec) cachedSpec = this.buildOpenAPISpec(options)
+      return cachedSpec
+    }
+    // Invalidate cache whenever new routes are added after openapi() is called.
+    const origPush = this.registeredRoutes.push.bind(this.registeredRoutes)
+    this.registeredRoutes.push = (...args) => {
+      cachedSpec = null
+      return origPush(...args)
+    }
 
     this.fastify.get('/openapi.json', async (_req, reply) =>
-      reply.header('Content-Type', 'application/json').send(spec),
+      reply.header('Content-Type', 'application/json').send(getSpec()),
     )
 
     const docsPath = options.docsPath !== false
