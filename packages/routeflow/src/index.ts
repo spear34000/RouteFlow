@@ -20,6 +20,7 @@ export { Route } from './core/decorator/route.js'
 export { Reactive } from './core/decorator/reactive.js'
 export { Guard } from './core/decorator/guard.js'
 export { ReactiveApiError, badRequest, unauthorized, forbidden, notFound } from './core/errors.js'
+export { body } from './core/body.js'
 export {
   SUPPORTED_DATABASES,
   getDatabaseSupport,
@@ -185,13 +186,36 @@ export class ReactiveApp {
   // ── Registration ───────────────────────────────────────────────────────────
 
   /**
-   * Register a controller class. Scans its methods for @Route, @Reactive, and
-   * @Guard decorators and registers HTTP routes and reactive endpoints accordingly.
+   * Register a controller class **or instance**.
    *
-   * @param ControllerClass - A class constructor whose methods may be decorated
-   *                          with @Route and/or @Reactive and/or @Guard.
+   * Scans the controller's methods for `@Route`, `@Reactive`, and `@Guard` decorators
+   * and registers HTTP routes and reactive endpoints accordingly.
+   *
+   * Passing a **pre-constructed instance** is the recommended pattern when the controller
+   * needs injected dependencies (stores, services, etc.). Passing a **class constructor**
+   * still works for dependency-free controllers.
+   *
+   * When `@Reactive` is added to a route that does **not** already end with `/live`,
+   * a companion live endpoint is automatically registered at `{routePath}/live`.
+   * This means you do not need a separate handler for the reactive path.
+   *
+   * @example
+   * ```ts
+   * // Recommended: pass an instance with dependencies
+   * class ItemController {
+   *   constructor(private items: TableStore<Item>) {}
+   *
+   *   @Route('GET', '/items')
+   *   @Reactive({ watch: 'items' })      // auto-registers /items/live
+   *   async getItems() { return this.items.list() }
+   * }
+   * app.register(new ItemController(items))
+   *
+   * // Also works: class constructor (no-arg controllers)
+   * app.register(HealthController)
+   * ```
    */
-  register(ControllerClass: new () => object): this {
+  register(controller: (new (...args: never[]) => object) | object): this {
     // Fail early with a clear message if reflect-metadata was not imported.
     if (typeof Reflect === 'undefined' || typeof Reflect.getMetadata !== 'function') {
       throw new Error(
@@ -200,7 +224,17 @@ export class ReactiveApp {
       )
     }
 
-    const instance = new ControllerClass()
+    // Accept either a class constructor or a pre-constructed instance.
+    const instance =
+      typeof controller === 'function'
+        ? new (controller as new () => object)()
+        : controller
+
+    const controllerName =
+      (instance as Record<string, unknown>).constructor instanceof Function
+        ? ((instance as Record<string, unknown>).constructor as { name?: string }).name ?? 'Controller'
+        : 'Controller'
+
     const proto = Object.getPrototypeOf(instance) as object
 
     const methodNames = Object.getOwnPropertyNames(proto).filter(
@@ -214,19 +248,21 @@ export class ReactiveApp {
       const routeMeta: RouteMetadata | undefined =
         routeFnStore.get(fn) ??
         (Reflect.getMetadata(ROUTE_METADATA, proto, methodName) as RouteMetadata | undefined)
-      if (!routeMeta) continue
 
       const reactiveMeta: ReactiveOptions | undefined =
         reactiveFnStore.get(fn) ??
         (Reflect.getMetadata(REACTIVE_METADATA, proto, methodName) as ReactiveOptions | undefined)
 
-      // Warn if @Reactive is present but @Route is missing — this is a silent failure otherwise.
+      // Warn if @Reactive is present but @Route is missing — silent failure otherwise.
       if (!routeMeta && reactiveMeta) {
         console.warn(
-          `[RouteFlow] ${ControllerClass.name}.${methodName} has @Reactive but no @Route — ` +
+          `[RouteFlow] ${controllerName}.${methodName} has @Reactive but no @Route — ` +
             'the reactive endpoint will not be registered. Add @Route to fix this.',
         )
+        continue
       }
+
+      if (!routeMeta) continue
 
       // Per-route guards (from @Guard decorator)
       const routeGuards: Middleware[] =
@@ -238,46 +274,67 @@ export class ReactiveApp {
         ctx: Context,
       ) => Promise<unknown>
 
+      // Shared Fastify route handler — reused for the main route and the auto-live companion.
+      const fastifyHandler = async (req: { params: unknown; query: unknown; body: unknown; headers: unknown }, reply: { send: (v: unknown) => unknown }) => {
+        const ctx: Context = {
+          params: req.params as Record<string, string>,
+          query: req.query as Record<string, string>,
+          body: req.body,
+          headers: req.headers as Record<string, string>,
+        }
+        try {
+          await runChain([...this.middlewares, ...routeGuards], ctx)
+          const result = await handler.call(instance, ctx)
+          return reply.send(result)
+        } catch (err) {
+          if (err instanceof ReactiveApiError) throw err
+          const msg = isProd
+            ? 'Internal server error'
+            : err instanceof Error
+              ? err.message
+              : String(err)
+          throw new ReactiveApiError('HANDLER_ERROR', msg)
+        }
+      }
+
       // Register HTTP route with Fastify
       this.fastify.route({
         method: routeMeta.method,
         url: routeMeta.path,
-        handler: async (req, reply) => {
-          const ctx: Context = {
-            params: req.params as Record<string, string>,
-            query: req.query as Record<string, string>,
-            body: req.body,
-            headers: req.headers as Record<string, string>,
-          }
-
-          try {
-            // Run global middlewares then route guards in order
-            await runChain([...this.middlewares, ...routeGuards], ctx)
-            const result = await handler.call(instance, ctx)
-            return reply.send(result)
-          } catch (err) {
-            if (err instanceof ReactiveApiError) throw err
-            const msg = isProd
-              ? 'Internal server error'
-              : err instanceof Error
-                ? err.message
-                : String(err)
-            throw new ReactiveApiError('HANDLER_ERROR', msg)
-          }
-        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: fastifyHandler as any,
       })
 
       this.registeredRoutes.push({ method: routeMeta.method, path: routeMeta.path, reactive: !!reactiveMeta })
 
-      // Register reactive endpoint if @Reactive is present
+      // Register reactive endpoint if @Reactive is present.
+      //
+      // Auto-live: if the route path does NOT already end with '/live', a companion
+      // GET endpoint is created at `{routePath}/live` so developers do not need to
+      // write a separate live handler with identical logic.
+      //
+      //   @Route('GET', '/items') + @Reactive({ watch: 'items' })
+      //   → REST  at GET /items
+      //   → Live  at GET /items/live  (auto-registered, same handler)
+      //   → WS/SSE subscribers connect to /items/live
       if (reactiveMeta) {
+        const isAlreadyLive = routeMeta.path.endsWith('/live')
+        const livePath = isAlreadyLive ? routeMeta.path : `${routeMeta.path}/live`
+
         const endpoint: ReactiveEndpoint = {
-          routePath: routeMeta.path,
+          routePath: livePath,
           options: reactiveMeta,
           handler: (ctx: Context) => handler.call(instance, ctx),
         }
         this.engine.registerEndpoint(endpoint)
-        this.reactivePatterns.push(routeMeta.path)
+        this.reactivePatterns.push(livePath)
+
+        // Register the companion HTTP GET {path}/live route when auto-live is triggered.
+        if (!isAlreadyLive) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          this.fastify.route({ method: 'GET', url: livePath, handler: fastifyHandler as any })
+          this.registeredRoutes.push({ method: 'GET', path: livePath, reactive: true })
+        }
       }
     }
 

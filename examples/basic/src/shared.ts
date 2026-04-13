@@ -1,4 +1,4 @@
-import { Reactive, Route } from 'routeflow-api'
+import { Reactive, Route, body } from 'routeflow-api'
 import type { Context, TableStore } from 'routeflow-api'
 
 // ── Schema ────────────────────────────────────────────────────────────────
@@ -14,52 +14,45 @@ export const seedItems: Omit<Item, 'id'>[] = [
   { name: 'Banana', createdAt: '2026-01-01T00:00:01.000Z' },
 ]
 
-// ── Controller factory ────────────────────────────────────────────────────
+// ── Controller ────────────────────────────────────────────────────────────
 //
-// Accepts any TableStore<Item> — works with RouteStore (SQLite),
-// a custom Postgres class, or any other backend.
+// Pass an instance to app.register() so the store is injected naturally:
 //
-// Change events are handled at the store/adapter level:
-//   • RouteStore  → create/update/delete auto-emit inside the store
-//   • Other DBs   → native CDC (triggers, binlog, etc.) fires through the adapter
+//   const items = db.table('items', { name: 'text', createdAt: 'text' })
+//   app.register(new ItemController(items))
+//
+// @Reactive on a non-/live route auto-registers a companion /items/live endpoint —
+// no separate live handler needed.
 
-export function createItemController(items: TableStore<Item>) {
-  class ItemController {
-    @Route('GET', '/items')
-    async getItems(_ctx: Context): Promise<Item[]> {
-      return items.list()
-    }
+export class ItemController {
+  constructor(private readonly items: TableStore<Item>) {}
 
-    @Route('GET', '/items/:id')
-    async getItem(ctx: Context): Promise<Item | { error: string }> {
-      const item = await items.get(Number(ctx.params['id']))
-      return item ?? { error: 'Not found' }
-    }
-
-    @Route('POST', '/items')
-    async createItem(ctx: Context): Promise<Item> {
-      const body = (ctx.body ?? {}) as { name?: string }
-      return items.create({ name: body.name ?? 'Unnamed', createdAt: new Date().toISOString() })
-    }
-
-    @Route('PUT', '/items/:id')
-    async updateItem(ctx: Context): Promise<Item | { error: string }> {
-      const body = (ctx.body ?? {}) as { name?: string }
-      const updated = await items.update(Number(ctx.params['id']), { name: body.name })
-      return updated ?? { error: 'Not found' }
-    }
-
-    @Route('DELETE', '/items/:id')
-    async deleteItem(ctx: Context): Promise<{ ok: boolean }> {
-      return { ok: await items.delete(Number(ctx.params['id'])) }
-    }
-
-    @Reactive({ watch: 'items' })
-    @Route('GET', '/items/live')
-    async getLiveItems(_ctx: Context): Promise<Item[]> {
-      return items.list()
-    }
+  @Route('GET', '/items')
+  @Reactive({ watch: 'items' })          // → also registers GET /items/live (WS/SSE)
+  async getItems(_ctx: Context): Promise<Item[]> {
+    return this.items.list()
   }
 
-  return ItemController
+  @Route('GET', '/items/:id')
+  async getItem(ctx: Context): Promise<Item | { error: string }> {
+    return (await this.items.get(Number(ctx.params['id']))) ?? { error: 'Not found' }
+  }
+
+  @Route('POST', '/items')
+  async createItem(ctx: Context): Promise<Item> {
+    const { name } = body<{ name: string }>(ctx)
+    return this.items.create({ name: name ?? 'Unnamed', createdAt: new Date().toISOString() })
+  }
+
+  @Route('PUT', '/items/:id')
+  async updateItem(ctx: Context): Promise<Item | { error: string }> {
+    const { name } = body<{ name: string }>(ctx)
+    const updated = await this.items.update(Number(ctx.params['id']), { name })
+    return updated ?? { error: 'Not found' }
+  }
+
+  @Route('DELETE', '/items/:id')
+  async deleteItem(ctx: Context): Promise<{ ok: boolean }> {
+    return { ok: await this.items.delete(Number(ctx.params['id'])) }
+  }
 }
