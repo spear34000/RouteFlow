@@ -4,6 +4,7 @@ import type {
   SubscriptionCallback,
   Unsubscribe,
 } from './types.js'
+import type { ConnectionState } from './reactive-websocket.js'
 import { ReactiveClientError } from './errors.js'
 import { ReactiveWebSocket } from './reactive-websocket.js'
 import { ReactiveSSE } from './reactive-sse.js'
@@ -125,6 +126,48 @@ export class ReactiveClient {
       return this.subscribeSSE<T>(path, callback, query)
     }
     return this.subscribeWS<T>(path, callback, query, onClose, onError)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connection state
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the current WebSocket connection state.
+   * Always `'disconnected'` when using SSE transport.
+   *
+   * @example
+   * ```ts
+   * if (client.getConnectionState() !== 'connected') {
+   *   showReconnectingBanner()
+   * }
+   * ```
+   */
+  getConnectionState(): ConnectionState {
+    return this.socket?.getConnectionState() ?? 'disconnected'
+  }
+
+  /**
+   * Register a callback that fires whenever the WebSocket connection state changes.
+   * Useful for showing "connecting…" / "reconnecting…" UI states.
+   *
+   * Returns an unsubscribe function to remove the listener.
+   *
+   * @example
+   * ```ts
+   * const off = client.onConnectionStateChange((state) => {
+   *   setIsOnline(state === 'connected')
+   * })
+   * // cleanup on unmount:
+   * off()
+   * ```
+   */
+  onConnectionStateChange(callback: (state: ConnectionState) => void): Unsubscribe {
+    if (!this.socket) {
+      // Socket not yet created — create it so we can attach the listener.
+      this.socket = new ReactiveWebSocket(this.baseUrl, this.options.reconnect, this.options.onError)
+    }
+    return this.socket.onConnectionStateChange(callback)
   }
 
   /**

@@ -192,6 +192,14 @@ export class ReactiveApp {
    *                          with @Route and/or @Reactive and/or @Guard.
    */
   register(ControllerClass: new () => object): this {
+    // Fail early with a clear message if reflect-metadata was not imported.
+    if (typeof Reflect === 'undefined' || typeof Reflect.getMetadata !== 'function') {
+      throw new Error(
+        '[RouteFlow] reflect-metadata is not available. ' +
+          "Add `import 'reflect-metadata'` at the very top of your entry file.",
+      )
+    }
+
     const instance = new ControllerClass()
     const proto = Object.getPrototypeOf(instance) as object
 
@@ -211,6 +219,14 @@ export class ReactiveApp {
       const reactiveMeta: ReactiveOptions | undefined =
         reactiveFnStore.get(fn) ??
         (Reflect.getMetadata(REACTIVE_METADATA, proto, methodName) as ReactiveOptions | undefined)
+
+      // Warn if @Reactive is present but @Route is missing — this is a silent failure otherwise.
+      if (!routeMeta && reactiveMeta) {
+        console.warn(
+          `[RouteFlow] ${ControllerClass.name}.${methodName} has @Reactive but no @Route — ` +
+            'the reactive endpoint will not be registered. Add @Route to fix this.',
+        )
+      }
 
       // Per-route guards (from @Guard decorator)
       const routeGuards: Middleware[] =
@@ -295,7 +311,7 @@ export class ReactiveApp {
     await this.options.adapter.connect()
 
     if (this.options.transport === 'websocket') {
-      this.transport = new WebSocketTransport(this.engine, this.reactivePatterns)
+      this.transport = new WebSocketTransport(this.engine, this.reactivePatterns, this.options.cors)
     } else if (this.options.transport === 'sse') {
       const sseTransport = new SseTransport(this.engine, this.reactivePatterns)
       sseTransport.register(this.fastify)

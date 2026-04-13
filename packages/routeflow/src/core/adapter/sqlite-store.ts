@@ -32,6 +32,14 @@ export class SQLiteStore {
    *                 Relative paths are resolved from `process.cwd()`.
    */
   constructor(dbPath: string) {
+    if (typeof dbPath !== 'string' || dbPath.trim() === '') {
+      throw new Error('[RouteFlow] SQLiteStore: dbPath must be a non-empty string.')
+    }
+    // Null-byte injection guard — a path containing \x00 would be silently
+    // truncated by the OS and could open a different file than intended.
+    if (dbPath.includes('\x00')) {
+      throw new Error('[RouteFlow] SQLiteStore: dbPath must not contain null bytes.')
+    }
     this.path = resolve(dbPath)
     mkdirSync(dirname(this.path), { recursive: true })
     this.db = new DatabaseSync(this.path)

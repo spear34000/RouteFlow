@@ -214,10 +214,12 @@ export class PostgresAdapter implements DatabaseAdapter {
 function isNotifyPayload(value: unknown): value is NotifyPayload {
   if (typeof value !== 'object' || value === null) return false
   const v = value as Record<string, unknown>
-  return (
-    typeof v['table'] === 'string' &&
-    (v['operation'] === 'INSERT' || v['operation'] === 'UPDATE' || v['operation'] === 'DELETE')
-  )
+  if (typeof v['table'] !== 'string') return false
+  if (v['operation'] !== 'INSERT' && v['operation'] !== 'UPDATE' && v['operation'] !== 'DELETE') return false
+  // new_row and old_row must be null or a plain object (never array, string, etc.)
+  if (v['new_row'] !== null && (typeof v['new_row'] !== 'object' || Array.isArray(v['new_row']))) return false
+  if (v['old_row'] !== null && (typeof v['old_row'] !== 'object' || Array.isArray(v['old_row']))) return false
+  return true
 }
 
 function errorMessage(err: unknown): string {

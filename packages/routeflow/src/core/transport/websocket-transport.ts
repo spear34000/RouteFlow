@@ -14,6 +14,11 @@ interface SubscribeMessage {
   query?: Record<string, string>
 }
 
+/** Message sent by the client to cancel a subscription. */
+interface UnsubscribeMessage {
+  type: 'unsubscribe'
+}
+
 /** Message pushed by the server when data changes. */
 interface UpdateMessage {
   type: 'update'
@@ -39,6 +44,14 @@ function isSubscribeMessage(value: unknown): value is SubscribeMessage {
   )
 }
 
+function isUnsubscribeMessage(value: unknown): value is UnsubscribeMessage {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<string, unknown>)['type'] === 'unsubscribe'
+  )
+}
+
 /**
  * WebSocket transport layer.
  *
@@ -60,12 +73,17 @@ export class WebSocketTransport {
   private readonly clientPatterns: Map<string, string> = new Map()
   /** Live connection count — tracked for DoS protection */
   private connectionCount = 0
+  /** Allowed origins for WebSocket upgrades (mirrors HTTP CORS config) */
+  private readonly allowedOrigins: boolean | string | string[]
 
   constructor(
     private readonly engine: ReactiveEngine,
     /** All registered route patterns (e.g. ['/orders/:userId/live']) */
     private readonly routePatterns: string[],
+    /** CORS config — same value passed to createApp({ cors }) */
+    allowedOrigins: boolean | string | string[] = true,
   ) {
+    this.allowedOrigins = allowedOrigins
     // noServer=true so we can attach to Fastify's underlying http.Server manually.
     // maxPayload: reject messages larger than 64 KiB to limit DoS exposure.
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
@@ -75,13 +93,46 @@ export class WebSocketTransport {
   /**
    * Attach to the raw Node.js HTTP server so WebSocket upgrade requests are
    * handled alongside Fastify routes.
+   *
+   * Validates the `Origin` header against the configured CORS policy before
+   * completing the upgrade. Requests from disallowed origins are rejected
+   * with HTTP 403.
    */
   attach(httpServer: HttpServer): void {
     httpServer.on('upgrade', (req, socket, head) => {
+      if (!this.isOriginAllowed(req)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
       this.wss.handleUpgrade(req, socket, head, (ws) => {
         this.wss.emit('connection', ws, req)
       })
     })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Origin validation
+  // ---------------------------------------------------------------------------
+
+  private isOriginAllowed(req: IncomingMessage): boolean {
+    // cors: true → allow all origins (including no-origin requests from non-browser clients)
+    if (this.allowedOrigins === true) return true
+
+    const origin = req.headers['origin']
+
+    // Non-browser clients (e.g. server-to-server) send no Origin header.
+    // Allow them unless cors is explicitly set to a restricted list/string.
+    if (!origin) return this.allowedOrigins === true
+
+    if (typeof this.allowedOrigins === 'string') {
+      return origin === this.allowedOrigins
+    }
+    if (Array.isArray(this.allowedOrigins)) {
+      return this.allowedOrigins.includes(origin)
+    }
+    // cors: false → reject all browser upgrade requests
+    return false
   }
 
   /** Gracefully close all connections. */
@@ -111,6 +162,12 @@ export class WebSocketTransport {
         parsed = JSON.parse(raw.toString())
       } catch {
         this.sendError(ws, 'INVALID_JSON', 'Message must be valid JSON')
+        return
+      }
+
+      if (isUnsubscribeMessage(parsed)) {
+        this.engine.unsubscribe(clientId)
+        this.clientPatterns.delete(clientId)
         return
       }
 

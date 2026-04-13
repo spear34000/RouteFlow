@@ -1,6 +1,22 @@
 import type { ChangeEvent, DatabaseAdapter, TableStore } from '../types.js'
 import { SQLiteStore } from './sqlite-store.js'
 
+/**
+ * Validates that a SQLite identifier (table name, column name) contains only
+ * safe characters, preventing SQL injection via identifier interpolation.
+ *
+ * Allowed: letters, digits, underscore. Must start with letter or underscore.
+ * Max 63 chars (consistent with PostgreSQL and a reasonable SQLite limit).
+ */
+function assertSafeIdentifier(value: string, label: string): void {
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(value)) {
+    throw new Error(
+      `[RouteFlow] Unsafe SQL identifier for ${label}: "${value}". ` +
+        'Identifiers must start with a letter or underscore and contain only letters, digits, or underscores (max 63 chars).',
+    )
+  }
+}
+
 export type ColumnType = 'integer' | 'text' | 'real' | 'json'
 export type SchemaDefinition = Record<string, ColumnType>
 
@@ -73,7 +89,12 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
 
   private createTable(): void {
     const validTypes: ReadonlySet<ColumnType> = new Set(['integer', 'text', 'real', 'json'])
+
+    // Validate table name and all column names against safe SQL identifier rules.
+    // Double-quoting alone is not enough — a name containing `"` would break the quote.
+    assertSafeIdentifier(this.tableName, 'table name')
     for (const [col, type] of Object.entries(this.schema)) {
+      assertSafeIdentifier(col, `column name in table "${this.tableName}"`)
       if (!validTypes.has(type as ColumnType)) {
         throw new Error(
           `[RouteFlow] Invalid column type "${type}" for "${col}" in table "${this.tableName}". ` +
@@ -181,9 +202,12 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
    */
   async create(data: Omit<InferRow<S>, 'id'>): Promise<InferRow<S>> {
     const serialized = this.serialize(data as Record<string, unknown>)
+    // Quote all column names — column keys are schema-validated at construction,
+    // but we quote defensively to prevent any future path that bypasses validation.
     const keys = Object.keys(serialized)
+    const quotedKeys = keys.map((k) => `"${k}"`)
     const result = this.run(
-      `INSERT INTO "${this.tableName}" (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`,
+      `INSERT INTO "${this.tableName}" (${quotedKeys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`,
       Object.values(serialized),
     )
     // Construct from serialized data + new id — avoids a round-trip SELECT.
@@ -206,7 +230,8 @@ export class RouteTable<S extends SchemaDefinition> implements TableStore<InferR
     if (!old) return null
 
     const serialized = this.serialize(data as Record<string, unknown>)
-    const setClauses = Object.keys(serialized).map((k) => `${k} = ?`).join(', ')
+    // Quote column names in SET clause — same defensive quoting as create().
+    const setClauses = Object.keys(serialized).map((k) => `"${k}" = ?`).join(', ')
     // RETURNING * avoids a second SELECT round-trip.
     const row = this.getOne(
       `UPDATE "${this.tableName}" SET ${setClauses} WHERE id = ? RETURNING *`,

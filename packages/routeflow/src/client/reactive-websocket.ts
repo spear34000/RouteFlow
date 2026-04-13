@@ -22,11 +22,15 @@ const DEFAULT_RECONNECT: Required<ReconnectOptions> = {
  *
  * Uses the browser-native `WebSocket` API — no Node.js imports.
  */
+/** Real-time connection state. */
+export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
+
 export class ReactiveWebSocket {
   private ws: WebSocket | null = null
   private readonly subscriptions: Map<string, Set<SubscriptionRecord>> = new Map()
   private readonly reconnectOpts: Required<ReconnectOptions>
   private readonly onError?: (error: { code: string; message: string }) => void
+  private readonly stateCallbacks = new Set<(state: ConnectionState) => void>()
 
   private reconnectAttempts = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -42,6 +46,50 @@ export class ReactiveWebSocket {
     this.wsUrl = baseUrl.replace(/^http/, 'ws')
     this.reconnectOpts = { ...DEFAULT_RECONNECT, ...reconnect }
     this.onError = onError
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connection state
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the current WebSocket connection state.
+   *
+   * - `'connecting'`    — initial connection attempt in progress
+   * - `'connected'`     — socket is open and active
+   * - `'reconnecting'`  — connection lost, backoff timer running
+   * - `'disconnected'`  — permanently destroyed
+   */
+  getConnectionState(): ConnectionState {
+    if (this.destroyed) return 'disconnected'
+    if (!this.ws) return this.reconnectTimer ? 'reconnecting' : 'connecting'
+    if (this.ws.readyState === WebSocket.OPEN) return 'connected'
+    if (this.ws.readyState === WebSocket.CONNECTING) return 'connecting'
+    return 'reconnecting'
+  }
+
+  /**
+   * Register a callback that fires whenever the connection state changes.
+   * Returns an unsubscribe function to remove the listener.
+   *
+   * @example
+   * ```ts
+   * const off = socket.onConnectionStateChange((state) => {
+   *   setIsOnline(state === 'connected')
+   * })
+   * // later:
+   * off()
+   * ```
+   */
+  onConnectionStateChange(callback: (state: ConnectionState) => void): () => void {
+    this.stateCallbacks.add(callback)
+    return () => this.stateCallbacks.delete(callback)
+  }
+
+  private emitState(state: ConnectionState): void {
+    for (const cb of this.stateCallbacks) {
+      try { cb(state) } catch { /* ignore callback errors */ }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -87,6 +135,11 @@ export class ReactiveWebSocket {
       this.subscriptions.get(path)?.delete(record as SubscriptionRecord)
       if (this.subscriptions.get(path)?.size === 0) {
         this.subscriptions.delete(path)
+        // Notify server to drop the subscription — frees server-side resources
+        // immediately rather than waiting for connection close.
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ type: 'unsubscribe' }))
+        }
       }
     }
   }
@@ -132,9 +185,11 @@ export class ReactiveWebSocket {
     }
 
     this.ws = ws
+    this.emitState('connecting')
 
     ws.onopen = () => {
       this.reconnectAttempts = 0
+      this.emitState('connected')
       // Re-subscribe to all active paths (handles reconnect restore)
       for (const [path, records] of this.subscriptions) {
         const query = [...records][0]?.query
@@ -172,8 +227,11 @@ export class ReactiveWebSocket {
     const { maxAttempts, initialDelayMs, backoffFactor, maxDelayMs } = this.reconnectOpts
 
     if (maxAttempts > 0 && this.reconnectAttempts >= maxAttempts) {
+      this.emitState('disconnected')
       return
     }
+
+    this.emitState('reconnecting')
 
     const delay = Math.min(
       initialDelayMs * Math.pow(backoffFactor, this.reconnectAttempts),

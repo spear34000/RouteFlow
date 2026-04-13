@@ -111,7 +111,12 @@ export class ReactiveEngine {
         if (endpoint.options.filter) {
           try {
             if (!endpoint.options.filter(event, sub.ctx)) continue
-          } catch {
+          } catch (err) {
+            // Log filter errors — silent swallow makes bugs invisible.
+            const message = err instanceof Error ? err.message : String(err)
+            console.error(
+              `[RouteFlow] Filter error on ${endpoint.routePath} for client ${clientId}: ${message}`,
+            )
             continue
           }
         }
@@ -183,21 +188,33 @@ export function pathMatchesPattern(concretePath: string, pattern: string): boole
   return regex.test(concretePath)
 }
 
+// Param-name lists are cached alongside regexes — keyed by pattern string.
+const patternParamNamesCache = new Map<string, string[]>()
+
 /**
  * Extract named path params from a concrete path given a route pattern.
+ * Both the compiled regex and the param-name list are cached by pattern.
  *
  * extractParams('/orders/123/live', '/orders/:userId/live') → { userId: '123' }
  */
 export function extractParams(concretePath: string, pattern: string): Record<string, string> {
-  const paramNames: string[] = []
-  const src = pattern
-    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, name: string) => {
-      paramNames.push(name)
-      return '([^/]+)'
-    })
+  let paramNames = patternParamNamesCache.get(pattern)
+  let regex = patternRegexCache.get(pattern)
 
-  const match = concretePath.match(new RegExp(`^${src}$`))
+  if (!regex || !paramNames) {
+    paramNames = []
+    const src = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, name: string) => {
+        paramNames!.push(name)
+        return '([^/]+)'
+      })
+    regex = new RegExp(`^${src}$`)
+    patternRegexCache.set(pattern, regex)
+    patternParamNamesCache.set(pattern, paramNames)
+  }
+
+  const match = concretePath.match(regex)
   if (!match) return {}
-  return Object.fromEntries(paramNames.map((name, i) => [name, match[i + 1]]))
+  return Object.fromEntries(paramNames.map((name, i) => [name, match[i + 1]!]))
 }
