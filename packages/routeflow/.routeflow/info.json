@@ -1,0 +1,23 @@
+{
+  "port": 0,
+  "transport": "websocket",
+  "adapter": "MemoryAdapter",
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/messages",
+      "reactive": false
+    },
+    {
+      "method": "POST",
+      "path": "/messages",
+      "reactive": false
+    },
+    {
+      "method": "GET",
+      "path": "/messages/live",
+      "reactive": true
+    }
+  ],
+  "startedAt": "2026-04-14T00:19:52.453Z"
+}

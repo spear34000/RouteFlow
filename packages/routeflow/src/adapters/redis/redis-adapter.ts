@@ -1,5 +1,4 @@
 import type { ChangeEvent, DatabaseAdapter } from '../../core/types.js'
-import { ReactiveApiError } from '../../core/errors.js'
 import type { RedisAdapterOptions, RedisChangePayload, RedisSubscriber } from './types.js'
 
 /**
@@ -82,18 +81,31 @@ export class RedisAdapter implements DatabaseAdapter {
     }
   }
 
+  /** Maximum accepted Redis message size (1 MiB). Larger payloads are dropped. */
+  private static readonly MAX_PAYLOAD_BYTES = 1 * 1024 * 1024
+
   private handleMessage(channel: string, payload: string): void {
     const table = parseChannelName(this.channelPrefix, channel)
     if (!table) return
+
+    // Guard against oversized payloads before JSON-parsing.
+    if (payload.length > RedisAdapter.MAX_PAYLOAD_BYTES) {
+      const msg = `[RouteFlow/redis] Dropping oversized message on channel "${channel}" (${payload.length} bytes > ${RedisAdapter.MAX_PAYLOAD_BYTES})`
+      console.warn(msg)
+      this.onError?.(new Error(msg))
+      return
+    }
 
     let data: unknown
     try {
       data = JSON.parse(payload)
     } catch (error) {
-      throw new ReactiveApiError(
-        'REDIS_PAYLOAD_INVALID',
-        `Failed to parse Redis payload for "${channel}": ${errorMessage(error)}`,
-      )
+      // Never throw inside an event-listener callback — the error would become
+      // an unhandled exception.  Emit to onError instead so callers can handle it.
+      const msg = `[RouteFlow/redis] Failed to parse payload on channel "${channel}": ${errorMessage(error)}`
+      console.error(msg)
+      this.onError?.(new Error(msg))
+      return
     }
 
     if (!isRedisChangePayload(data)) return
@@ -110,7 +122,13 @@ export class RedisAdapter implements DatabaseAdapter {
     }
 
     for (const callback of callbacks) {
-      callback(event)
+      try {
+        callback(event)
+      } catch (err) {
+        const msg = `[RouteFlow/redis] Listener error on table "${data.table}": ${errorMessage(err)}`
+        console.error(msg)
+        this.onError?.(new Error(msg))
+      }
     }
   }
 }

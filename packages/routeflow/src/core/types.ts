@@ -149,6 +149,24 @@ export interface FlowOptions {
   watch?: string
   /** Per-flow guards, applied after global middleware. */
   guards?: Middleware[]
+  /**
+   * Reactive push strategy for the `/live` endpoint.
+   *
+   * - `'snapshot'` (default) — re-fetches the full list via `store.list()` on every
+   *   change and pushes the complete array. Simple and always consistent.
+   *
+   * - `'delta'` — pushes only the changed row without a DB round-trip:
+   *   `{ operation: 'INSERT'|'UPDATE'|'DELETE', row: newRow ?? oldRow, timestamp }`.
+   *   Ideal for chat / messaging where clients maintain local state and only
+   *   need incremental updates.  Latency is dramatically lower under load.
+   *
+   * @example
+   * ```ts
+   * // Chat messages — push only the new message, not the full history
+   * app.flow('/messages', messages, { push: 'delta' })
+   * ```
+   */
+  push?: 'snapshot' | 'delta'
 }
 
 /**
@@ -207,6 +225,11 @@ export interface ReactiveEndpoint {
   options: ReactiveOptions
   /** The async handler function bound to its controller instance */
   handler: (ctx: Context) => Promise<unknown>
+  /**
+   * Optional fast-path that derives a delta payload directly from the ChangeEvent
+   * without a DB round-trip.  When set, the engine calls this instead of `handler`.
+   */
+  deltaFn?: (event: ChangeEvent) => unknown
 }
 
 /** Push function signature used by the engine to deliver updates to a client. */

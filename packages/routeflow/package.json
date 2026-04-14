@@ -1,6 +1,6 @@
 {
   "name": "routeflow-api",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "description": "RouteFlow — REST API with real-time database push subscriptions",
   "license": "Apache-2.0",
   "repository": {

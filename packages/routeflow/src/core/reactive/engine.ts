@@ -10,6 +10,7 @@ import type {
 const patternRegexCache = new Map<string, RegExp>()
 
 interface Subscription {
+  clientId: string
   path: string
   ctx: Context
   pushFn: PushFn
@@ -23,6 +24,12 @@ interface Subscription {
  * 2. Subscribes to the DatabaseAdapter for each watched table
  * 3. On a ChangeEvent, fans out to matching subscribers after applying filters
  * 4. Supports optional per-subscriber debouncing
+ *
+ * ## Fan-out optimisation
+ * Subscribers watching the same concrete path (e.g. `/posts/live`) share a
+ * single handler invocation per ChangeEvent.  The handler is called **once**
+ * per unique concrete path and the result is pushed to every subscriber in
+ * that group — avoiding N DB queries for N connected clients.
  */
 export class ReactiveEngine {
   private readonly endpoints: ReactiveEndpoint[] = []
@@ -45,7 +52,7 @@ export class ReactiveEngine {
   }
 
   subscribe(clientId: string, path: string, ctx: Context, pushFn: PushFn): void {
-    this.subscriptions.set(clientId, { path, ctx, pushFn })
+    this.subscriptions.set(clientId, { clientId, path, ctx, pushFn })
 
     // Immediately push current state so the client has data without waiting for
     // the first DB change event (eliminates the separate get() + subscribe() dance).
@@ -105,61 +112,115 @@ export class ReactiveEngine {
     for (const endpoint of this.endpoints) {
       if (!normalizeWatch(endpoint.options.watch).includes(event.table)) continue
 
-      for (const [clientId, sub] of this.subscriptions) {
-        if (!pathMatchesPattern(sub.path, endpoint.routePath)) continue
+      const debounceMs = endpoint.options.debounce
 
-        if (endpoint.options.filter) {
-          try {
-            if (!endpoint.options.filter(event, sub.ctx)) continue
-          } catch (err) {
-            // Log filter errors — silent swallow makes bugs invisible.
-            const message = err instanceof Error ? err.message : String(err)
-            console.error(
-              `[RouteFlow] Filter error on ${endpoint.routePath} for client ${clientId}: ${message}`,
-            )
-            continue
-          }
+      if (debounceMs !== undefined && debounceMs > 0) {
+        // Per-subscriber debounced push — cannot share a single handler call
+        // because each timer is independent.
+        for (const [clientId, sub] of this.subscriptions) {
+          if (!pathMatchesPattern(sub.path, endpoint.routePath)) continue
+          if (!this.passesFilter(endpoint, event, sub)) continue
+          this.scheduleDebounced(clientId, endpoint, sub, debounceMs)
         }
-
-        this.schedulePush(clientId, endpoint, sub)
+      } else {
+        // ── Fan-out optimisation ──────────────────────────────────────────────
+        // Group all matching subscribers by their concrete subscribed path.
+        // Subscribers on the same path share one handler invocation, so we
+        // call store.list() (or any handler) exactly ONCE per unique path —
+        // not once per connected client.
+        //
+        //   10 clients → /posts/live  →  1 DB query, 10 WS pushes
+        //
+        const groups = new Map<string, Subscription[]>()
+        for (const [, sub] of this.subscriptions) {
+          if (!pathMatchesPattern(sub.path, endpoint.routePath)) continue
+          if (!this.passesFilter(endpoint, event, sub)) continue
+          const bucket = groups.get(sub.path)
+          if (bucket) bucket.push(sub)
+          else groups.set(sub.path, [sub])
+        }
+        for (const [, subs] of groups) {
+          void this.executeFanOut(endpoint, event, subs)
+        }
       }
     }
   }
 
-  private schedulePush(
-    clientId: string,
+  /**
+   * Execute the handler once and push the result to every subscriber in the
+   * group.  If the endpoint provides a `deltaFn`, use that instead of calling
+   * the full handler (zero DB round-trip for simple INSERT/UPDATE/DELETE).
+   */
+  private async executeFanOut(
     endpoint: ReactiveEndpoint,
-    sub: Subscription,
-  ): void {
-    const debounceMs = endpoint.options.debounce
+    event: ChangeEvent,
+    subs: Subscription[],
+  ): Promise<void> {
+    if (subs.length === 0) return
+    const sub = subs[0]!
+    try {
+      // If the endpoint exposes a fast-path delta function, use it so we skip
+      // the DB re-query entirely.  Falls back to the full handler otherwise.
+      const data = endpoint.deltaFn
+        ? endpoint.deltaFn(event)
+        : await endpoint.handler(sub.ctx)
 
-    if (debounceMs !== undefined && debounceMs > 0) {
-      const timerKey = `${clientId}:${sub.path}`
-      const existing = this.debounceTimers.get(timerKey)
-      if (existing !== undefined) clearTimeout(existing)
-
-      const timer = setTimeout(() => {
-        this.debounceTimers.delete(timerKey)
-        this.clientTimers.get(clientId)?.delete(timerKey)
-        void this.executePush(endpoint, sub)
-      }, debounceMs)
-
-      this.debounceTimers.set(timerKey, timer)
-      if (!this.clientTimers.has(clientId)) this.clientTimers.set(clientId, new Set())
-      this.clientTimers.get(clientId)!.add(timerKey)
-    } else {
-      void this.executePush(endpoint, sub)
+      // Push the same data to all subscribers in this group.
+      for (const s of subs) {
+        if (this.subscriptions.has(s.clientId)) {
+          s.pushFn(s.path, data)
+        }
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[RouteFlow] Reactive handler error on ${sub.path}: ${message}`)
     }
   }
 
-  private async executePush(endpoint: ReactiveEndpoint, sub: Subscription): Promise<void> {
+  private scheduleDebounced(
+    clientId: string,
+    endpoint: ReactiveEndpoint,
+    sub: Subscription,
+    debounceMs: number,
+  ): void {
+    const timerKey = `${clientId}:${sub.path}`
+    const existing = this.debounceTimers.get(timerKey)
+    if (existing !== undefined) clearTimeout(existing)
+
+    const timer = setTimeout(() => {
+      this.debounceTimers.delete(timerKey)
+      this.clientTimers.get(clientId)?.delete(timerKey)
+      void this.executeSingle(endpoint, sub)
+    }, debounceMs)
+
+    this.debounceTimers.set(timerKey, timer)
+    if (!this.clientTimers.has(clientId)) this.clientTimers.set(clientId, new Set())
+    this.clientTimers.get(clientId)!.add(timerKey)
+  }
+
+  private async executeSingle(endpoint: ReactiveEndpoint, sub: Subscription): Promise<void> {
     try {
       const data = await endpoint.handler(sub.ctx)
-      sub.pushFn(sub.path, data)
+      if (this.subscriptions.has(sub.clientId)) {
+        sub.pushFn(sub.path, data)
+      }
     } catch (err: unknown) {
-      // Log the error but do not crash the server — the subscription stays alive.
       const message = err instanceof Error ? err.message : String(err)
       console.error(`[RouteFlow] Reactive handler error on ${sub.path}: ${message}`)
+    }
+  }
+
+  /** Returns false if the endpoint's filter rejects this event for this subscriber. */
+  private passesFilter(endpoint: ReactiveEndpoint, event: ChangeEvent, sub: Subscription): boolean {
+    if (!endpoint.options.filter) return true
+    try {
+      return endpoint.options.filter(event, sub.ctx)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(
+        `[RouteFlow] Filter error on ${endpoint.routePath} for client ${sub.clientId}: ${message}`,
+      )
+      return false
     }
   }
 }

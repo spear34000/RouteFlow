@@ -389,12 +389,13 @@ export class ReactiveApp {
     store: TableStore<T>,
     options: FlowOptions = {},
   ): this {
-    const tableName = options.watch
+    const tableName  = options.watch
       ?? basePath.replace(/^\//, '').split('/')[0]
       ?? 'unknown'
-    const livePath  = `${basePath}/live`
-    const guards    = options.guards ?? []
-    const only      = new Set(
+    const livePath   = `${basePath}/live`
+    const guards     = options.guards ?? []
+    const pushMode   = options.push   ?? 'snapshot'
+    const only       = new Set(
       options.only ?? ['list', 'get', 'create', 'update', 'delete', 'live'],
     )
 
@@ -443,13 +444,18 @@ export class ReactiveApp {
     }
 
     if (only.has('update')) {
-      this.fastify.put(`${basePath}/:id`, exec(async (ctx) => {
+      // Both PUT (full replace) and PATCH (partial) are registered so clients can
+      // use whichever HTTP verb fits their convention.
+      const updateHandler = exec(async (ctx) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const updated = await store.update(Number(ctx.params['id']), body(ctx) as any)
         if (!updated) throw notFound(`${ctx.params['id']} not found`)
         return updated
-      }))
-      this.registeredRoutes.push({ method: 'PUT', path: `${basePath}/:id`, reactive: false })
+      })
+      this.fastify.put  (`${basePath}/:id`, updateHandler)
+      this.fastify.patch(`${basePath}/:id`, updateHandler)
+      this.registeredRoutes.push({ method: 'PUT',   path: `${basePath}/:id`, reactive: false })
+      this.registeredRoutes.push({ method: 'PATCH', path: `${basePath}/:id`, reactive: false })
     }
 
     if (only.has('delete')) {
@@ -460,10 +466,26 @@ export class ReactiveApp {
     }
 
     if (only.has('live')) {
+      // ── Delta push mode ──────────────────────────────────────────────────────
+      // When push: 'delta', the engine bypasses store.list() entirely and sends
+      // only the changed row.  This eliminates the DB round-trip on every mutation,
+      // which is critical for high-frequency updates (chat, live feeds, etc.).
+      //
+      // Delta payload shape:
+      //   { operation: 'INSERT' | 'UPDATE' | 'DELETE', row: T | null, timestamp: number }
+      const deltaFn = pushMode === 'delta'
+        ? (event: import('./core/types.js').ChangeEvent) => ({
+            operation: event.operation,
+            row:       event.newRow ?? event.oldRow,
+            timestamp: event.timestamp,
+          })
+        : undefined
+
       this.engine.registerEndpoint({
         routePath: livePath,
         options:   { watch: tableName },
         handler:   () => store.list(),
+        deltaFn,
       })
       this.reactivePatterns.push(livePath)
       this.fastify.get(livePath, exec(() => store.list()))

@@ -51,6 +51,9 @@ export class ReactiveApp {
     this.options = {
       transport: 'websocket',
       port: 3000,
+      cors: true,
+      bodyLimit: 1_048_576,
+      logger: false,
       ...options,
     }
     this.fastify = Fastify({ logger: false })
