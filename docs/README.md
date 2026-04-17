@@ -8,6 +8,7 @@ RouteFlow를 실제로 쓰는 순서대로 문서를 정리합니다.
 2. [`server.md`](./server.md) - `createApp`, `@Route`, `@Reactive` 사용법
 3. [`client.md`](./client.md) - `createClient`, `subscribe()` 사용법
 4. [`adapters.md`](./adapters.md) - `MemoryAdapter`, `PostgresAdapter`, `PollingAdapter` 연결 방식
+5. [`examples.md`](./examples.md) - 바로 실행 가능한 예제와 smoke test
 
 ## 참고 문서
 

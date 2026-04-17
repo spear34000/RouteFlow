@@ -1,5 +1,7 @@
 # RouteFlow 사용 가이드
 
+이 문서는 "무엇을 어떻게 설계하면 운영에서 덜 고생하는가"에 초점을 둡니다.
+
 ## 아키텍처: 정보는 어디에 저장되나
 
 ```
@@ -26,6 +28,8 @@
 ```
 DB 변경 → Adapter 감지 → 서버 → 구독자 브로드캐스트 → 클라이언트 업데이트
 ```
+
+처음 읽는 사람이라면 먼저 [`getting-started.md`](./getting-started.md)와 [`examples.md`](./examples.md)를 보고 오는 편이 좋습니다.
 
 ---
 
@@ -63,6 +67,15 @@ npm install routeflow-api ioredis   # Redis
 ```
 
 > `reflect-metadata`는 `routeflow-api` 안에 포함되어 있어 별도 설치 불필요.
+
+## 시작 전략
+
+실제 프로젝트에서는 아래 순서가 가장 덜 위험합니다.
+
+1. `Todo` 예제나 `MemoryAdapter`로 전체 흐름을 먼저 확인한다.
+2. 로컬에서는 `RouteStore`로 API 형태와 live 엔드포인트를 고정한다.
+3. 운영 직전에 `TableStore<T>` 인터페이스를 유지한 채 Postgres 같은 실제 DB로 바꾼다.
+4. 마지막으로 `/_health`, request tracing, graceful shutdown을 점검한다.
 
 ---
 
@@ -130,6 +143,12 @@ await app.listen()
 const { RouteStore } = require('routeflow-api/sqlite')
 ```
 
+이 패턴이 좋은 경우:
+
+- 혼자 빠르게 MVP를 띄울 때
+- 작은 팀이 단일 노드로 운영할 때
+- 문서/예제/교육용 샘플을 만들 때
+
 ### 패턴 2 — 팩토리 + TableStore\<T\> (백엔드 교체 가능)
 
 컨트롤러가 `TableStore<T>` 인터페이스만 보도록 만들면 SQLite → Postgres → 어떤 DB든 같은 팩토리를 재사용할 수 있습니다.
@@ -186,6 +205,12 @@ createApp({ adapter, port: 3000 })
   .register(createItemController(new PgItemStore()))
 ```
 
+이 패턴이 좋은 경우:
+
+- 로컬/운영 DB가 다를 때
+- ORM이나 query layer를 직접 제어하고 싶을 때
+- 테스트에서 store만 바꿔 끼우고 싶을 때
+
 ### 패턴 3 — MemoryAdapter (테스트·데모)
 
 빠른 프로토타입이나 테스트에 쓸 때 사용합니다.
@@ -214,6 +239,12 @@ await app.listen()
 data.push({ id: 2, name: 'Orange' })
 adapter.emit('items', { operation: 'INSERT', newRow: { id: 2, name: 'Orange' }, oldRow: null })
 ```
+
+이 패턴이 좋은 경우:
+
+- 테스트에서 DB 의존성을 완전히 빼고 싶을 때
+- 문서 예제를 가장 짧게 유지하고 싶을 때
+- 구독/푸시 동작만 빠르게 확인하고 싶을 때
 
 ---
 
@@ -253,6 +284,12 @@ async liveLogs(_ctx: Context) {
 // 서버
 const app = createApp({ adapter, transport: 'sse', port: 3000 })
 ```
+
+SSE를 먼저 고려할 만한 경우:
+
+- 브라우저 중심 서비스
+- 프록시/로드밸런서 환경에서 WebSocket 제약이 있을 때
+- 단방향 서버 → 클라이언트 push만 필요할 때
 
 ### 커스텀 라우트 (Fastify 직접 접근)
 
