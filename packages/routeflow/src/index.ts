@@ -10,7 +10,7 @@ import { routeFnStore } from './core/decorator/route.js'
 import { reactiveFnStore } from './core/decorator/reactive.js'
 import { guardFnStore, GUARD_METADATA } from './core/decorator/guard.js'
 import type { RouteMetadata, ReactiveOptions } from './core/types.js'
-import { ReactiveEngine } from './core/reactive/engine.js'
+import { ReactiveEngine, stableSerialize } from './core/reactive/engine.js'
 import { WebSocketTransport } from './core/transport/websocket-transport.js'
 import { SseTransport } from './core/transport/sse-transport.js'
 import { ReactiveApiError, badRequest, notFound } from './core/errors.js'
@@ -460,11 +460,13 @@ export class ReactiveApp {
     const createMerge   = options.createMerge   ?? queryFilter
     const initialLimit  = options.initialLimit
     const queryMode     = options.query         ?? false
+    const liveQueryKeys = options.liveQueryKeys
     const flowFilter    = options.filter
     const validate      = options.validate
     const hooks         = options.hooks
     const protect       = options.protect
     const relations     = options.relations
+    const liveInclude   = options.liveInclude   ?? false
     const only          = new Set(
       options.only ?? ['list', 'get', 'create', 'update', 'delete', 'live'],
     )
@@ -496,6 +498,37 @@ export class ReactiveApp {
         if (q['order']   != null) opts['order']   = q['order']
       }
       return opts
+    }
+
+    const buildLiveGroupSignature = (ctx: Context): string | undefined => {
+      const parts: Record<string, unknown> = {}
+      const queryKeys = new Set<string>(liveQueryKeys ?? [])
+
+      if (queryFilter) parts['where'] = queryFilter(ctx)
+      if (queryMode === 'auto') {
+        for (const key of ['limit', 'offset', 'after', 'orderBy', 'order']) {
+          if (ctx.query[key] != null) queryKeys.add(key)
+        }
+      }
+      if (relations && ctx.query['include'] != null) queryKeys.add('include')
+
+      if (queryKeys.size > 0) {
+        const queryPart: Record<string, string> = {}
+        for (const key of [...queryKeys].sort()) {
+          const value = ctx.query[key]
+          if (value != null) queryPart[key] = value
+        }
+        if (Object.keys(queryPart).length > 0) parts['query'] = queryPart
+      }
+
+      return Object.keys(parts).length > 0 ? stableSerialize(parts) : undefined
+    }
+
+    const resolveRelationWatch = (name: string, relation: NonNullable<typeof relations>[string]): string[] => {
+      if (relation.watch) return Array.isArray(relation.watch) ? relation.watch : [relation.watch]
+      const explicit = (relation.store as TableStore<{ id: number }> & { tableName?: string }).tableName
+      if (explicit) return [explicit]
+      return name.endsWith('s') ? [name] : [name, `${name}s`]
     }
 
     /** Strip protected fields from any response object or array. */
@@ -698,7 +731,16 @@ export class ReactiveApp {
       //
       // Delta payload shape:
       //   { operation: 'INSERT' | 'UPDATE' | 'DELETE', row: T | null, timestamp: number }
-      const deltaFn = pushMode === 'delta'
+      const unsafeForDelta =
+        queryFilter != null ||
+        queryMode === 'auto' ||
+        flowFilter != null ||
+        (protect?.length ?? 0) > 0 ||
+        relations != null ||
+        liveInclude
+
+      const shouldUseSmartDelta = pushMode === 'smart' && !unsafeForDelta
+      const deltaFn = pushMode === 'delta' || shouldUseSmartDelta
         ? (event: import('./core/types.js').ChangeEvent) => ({
             operation: event.operation,
             row:       event.newRow ?? event.oldRow,
@@ -714,6 +756,7 @@ export class ReactiveApp {
       const derivedFilter = flowFilter
         ?? (queryFilter
           ? (event: import('./core/types.js').ChangeEvent, ctx: Context) => {
+              if (liveInclude && event.table !== tableName) return true
               const where = queryFilter(ctx)
               const row = (event.newRow ?? event.oldRow) as Record<string, unknown> | null
               if (!row) return true
@@ -722,30 +765,48 @@ export class ReactiveApp {
           : undefined)
 
       // ── Snapshot handler (full list, respects queryFilter) ─────────────────
-      const snapshotHandler = (ctx: Context) =>
+      const loadLiveRows = async (ctx: Context) =>
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        store.list(queryFilter ? ({ where: queryFilter(ctx) } as any) : {})
+        store.list(buildListOpts(ctx) as any)
+
+      const snapshotHandler = async (ctx: Context) => {
+        const listed = await loadLiveRows(ctx)
+        return applyProtect(await applyRelations(listed, ctx))
+      }
 
       // ── Initial push handler (limited snapshot for large tables) ───────────
       const initialHandler = initialLimit != null
-        ? (ctx: Context) =>
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            store.list(queryFilter
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              ? ({ where: queryFilter(ctx), limit: initialLimit, order: 'desc' } as any)
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              : ({ limit: initialLimit, order: 'desc' } as any))
+        ? async (ctx: Context) => {
+          const baseOpts = buildListOpts(ctx) as Record<string, unknown>
+          const initialOpts = {
+            ...baseOpts,
+            limit: initialLimit,
+            order: 'desc',
+          }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const listed = await store.list(initialOpts as any)
+          return applyProtect(await applyRelations(listed, ctx))
+        }
         : undefined
+
+      const watchTables = [...new Set([
+        tableName,
+        ...(liveInclude && relations
+          ? Object.entries(relations).flatMap(([name, relation]) => resolveRelationWatch(name, relation))
+          : []),
+      ])]
 
       this.engine.registerEndpoint({
         routePath: livePath,
-        options:   { watch: tableName, filter: derivedFilter },
+        options:   { watch: watchTables, filter: derivedFilter },
         handler:   snapshotHandler,
         deltaFn,
+        deltaWatch: deltaFn ? [tableName] : undefined,
         initialHandler,
+        groupKeyFn: buildLiveGroupSignature,
       })
       this.reactivePatterns.push(livePath)
-      this.fastify.get(livePath, exec((ctx) => snapshotHandler(ctx)))
+      this.fastify.get(livePath, exec((ctx) => loadLiveRows(ctx)))
       this.registeredRoutes.push({ method: 'GET', path: livePath, reactive: true })
     }
 

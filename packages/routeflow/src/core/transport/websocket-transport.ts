@@ -2,7 +2,7 @@ import { IncomingMessage, Server as HttpServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { ReactiveEngine } from '../reactive/engine.js'
-import { extractParams, pathMatchesPattern } from '../reactive/engine.js'
+import { extractParams, normalizeSubscriptionPath, pathMatchesPattern } from '../reactive/engine.js'
 import type { Context } from '../types.js'
 import { ReactiveApiError } from '../errors.js'
 
@@ -297,20 +297,22 @@ export class WebSocketTransport {
 
   private handleSubscribe(ws: WebSocket, clientId: string, msg: SubscribeMessage): void {
     const { path, query = {} } = msg
+    const normalized = normalizeSubscriptionPath(path)
+    const mergedQuery = { ...normalized.query, ...query }
 
     // Find the matching route pattern
-    const pattern = this.routePatterns.find((p) => pathMatchesPattern(path, p))
+    const pattern = this.routePatterns.find((p) => pathMatchesPattern(normalized.pathname, p))
 
     if (!pattern) {
       this.sendError(ws, 'NO_REACTIVE_ENDPOINT', `No reactive endpoint found for path: ${path}`)
       return
     }
 
-    const params = extractParams(path, pattern)
+    const params = extractParams(normalized.pathname, pattern)
 
     const ctx: Context = {
       params,
-      query,
+      query: mergedQuery,
       body: undefined,
       headers: {},
     }

@@ -403,6 +403,69 @@ describe('derived reactive filter from queryFilter', () => {
   })
 })
 
+describe('query-aware live subscriptions', () => {
+  it('separates live fan-out groups by query string when query:auto is enabled', async () => {
+    const store = makeMessageStore([
+      { id: 1, roomId: 1, content: 'a' },
+      { id: 2, roomId: 1, content: 'b' },
+      { id: 3, roomId: 1, content: 'c' },
+    ])
+    const listSpy = vi.spyOn(store, 'list')
+    const adapter = new MemoryAdapter()
+    const app = createApp({ adapter, port: 0 })
+    app.flow('/messages', store, { query: 'auto' })
+    await app.listen()
+    const address = app.getFastify().server.address()
+    const port = typeof address === 'object' && address ? address.port : 3000
+
+    const { WebSocket } = await import('ws')
+
+    try {
+      const sockets = await Promise.all([
+        new Promise<InstanceType<typeof WebSocket>>((resolve, reject) => {
+          const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+          ws.on('open', () => {
+            ws.send(JSON.stringify({ type: 'subscribe', path: '/messages/live?limit=1' }))
+            resolve(ws)
+          })
+          ws.on('error', reject)
+        }),
+        new Promise<InstanceType<typeof WebSocket>>((resolve, reject) => {
+          const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+          ws.on('open', () => {
+            ws.send(JSON.stringify({ type: 'subscribe', path: '/messages/live?limit=2' }))
+            resolve(ws)
+          })
+          ws.on('error', reject)
+        }),
+      ])
+
+      await new Promise(r => setTimeout(r, 150))
+      listSpy.mockClear()
+
+      adapter.emit('messages', {
+        operation: 'INSERT',
+        newRow: { id: 4, roomId: 1, content: 'd' },
+        oldRow: null,
+        timestamp: Date.now(),
+      })
+      await new Promise(r => setTimeout(r, 150))
+
+      expect(listSpy).toHaveBeenCalledTimes(2)
+      expect(listSpy.mock.calls).toEqual(
+        expect.arrayContaining([
+          [expect.objectContaining({ limit: 1 })],
+          [expect.objectContaining({ limit: 2 })],
+        ]),
+      )
+
+      for (const ws of sockets) ws.close()
+    } finally {
+      await app.close()
+    }
+  })
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 7. Presence hooks — onConnect / onDisconnect
 // ─────────────────────────────────────────────────────────────────────────────

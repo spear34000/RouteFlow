@@ -5,9 +5,13 @@
 [![Adapters](https://img.shields.io/badge/Official%20Adapters-8-DB5C34)](#공식-지원)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue)](./LICENSE)
 
-> **"REST처럼 쓰는데, DB 변경이 생기면 구독 중인 클라이언트에 자동으로 푸시된다."**
+> **"REST처럼 쓰는데, 쿼리와 관계까지 이해해서 바뀐 것만 실시간으로 푸시된다."**
 
 RouteFlow는 기존 REST API 작성 방식을 유지하면서, DB 변경이 생기면 해당 엔드포인트를 구독 중인 클라이언트에게 최신 결과를 자동 푸시하는 반응형 백엔드 프레임워크입니다.
+
+- Query-aware live subscriptions
+- Smart delta push
+- Live include responses
 
 Supabase Realtime·Firebase·Prisma Pulse와 달리 특정 플랫폼에 종속되지 않는 어댑터 패턴으로 설계되었습니다.
 
@@ -72,6 +76,41 @@ pnpm run example:todos:smoke
 ```
 
 이 smoke test는 실제 예제 서버를 띄우고 `GET /todos`, `POST /todos`, `/todos/live` push까지 확인합니다.
+
+### 차별화 예제
+
+RouteFlow의 고유 기능을 한 번에 보려면 이 예제를 실행하면 됩니다.
+
+```bash
+pnpm run example:differentiation
+```
+
+자동 검증:
+
+```bash
+pnpm run example:differentiation:smoke
+```
+
+이 예제는 다음을 함께 보여줍니다.
+
+- `/rooms/:roomId/messages/live?include=author&limit=10`
+  Query-aware live + live include
+- `/activity/live`
+  `push: 'smart'`가 단순 route에서는 delta로 동작
+
+핵심 설정 예시:
+
+```ts
+app.flow('/rooms/:roomId/messages', messages, {
+  push: 'smart',
+  queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
+  query: 'auto',
+  relations: {
+    author: { store: users, foreignKey: 'authorId' },
+  },
+  liveInclude: true,
+})
+```
 
 ### 파일 저장 서버 (SQLite, 권장)
 

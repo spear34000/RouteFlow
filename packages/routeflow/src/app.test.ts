@@ -449,8 +449,9 @@ describe('flow() ?include= with getMany()', () => {
   interface User   { id: number; username: string }
   interface Post   { id: number; userId: number; title: string }
 
-  function makeGetManyStore<T extends { id: number }>(rows: T[]): TableStore<T> {
+  function makeGetManyStore<T extends { id: number }>(rows: T[], tableName?: string): TableStore<T> {
     return {
+      tableName,
       list:    async () => [...rows],
       get:     async (id) => rows.find((r) => r.id === id) ?? null,
       // getMany: single IN-clause call, returns result in input order
@@ -472,8 +473,8 @@ describe('flow() ?include= with getMany()', () => {
       { id: 12, userId: 1, title: 'Post C' },
     ]
 
-    const userStore = makeGetManyStore(users)
-    const postStore = makeGetManyStore(posts)
+    const userStore = makeGetManyStore(users, 'users')
+    const postStore = makeGetManyStore(posts, 'posts')
 
     // Spy to verify getMany is called instead of multiple get() calls
     const getManyspy = vi.spyOn(userStore, 'getMany')
@@ -520,7 +521,7 @@ describe('flow() ?include= with getMany()', () => {
       delete: async () => false,
     }
     const getSpy = vi.spyOn(userStore, 'get')
-    const postStore = makeGetManyStore(posts)
+    const postStore = makeGetManyStore(posts, 'posts')
 
     const { app, baseUrl } = await startApp((a) =>
       a.flow('/posts', postStore, {
@@ -536,6 +537,197 @@ describe('flow() ?include= with getMany()', () => {
       expect(body[0]!.user).toEqual({ id: 1, username: 'alice' })
       // get() called for each unique FK (fallback path)
       expect(getSpy).toHaveBeenCalled()
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('recomputes /live?include=user when the included relation changes and liveInclude is enabled', async () => {
+    const users: User[] = [{ id: 1, username: 'alice' }]
+    const posts: Post[] = [{ id: 10, userId: 1, title: 'Post A' }]
+
+    const userStore = makeGetManyStore(users, 'users')
+    const postStore = makeGetManyStore(posts, 'posts')
+    const adapter = new MemoryAdapter()
+    const app = createApp({ adapter, port: 0 })
+    app.flow('/posts', postStore, {
+      relations: { user: { store: userStore, foreignKey: 'userId' } },
+      liveInclude: true,
+    })
+    await app.listen()
+    const address = app.getFastify().server.address()
+    const port = typeof address === 'object' && address ? address.port : 3000
+
+    const { WebSocket } = await import('ws')
+    const received: unknown[] = []
+    let stage: 'initial' | 'change' = 'initial'
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+        ws.on('open', () => ws.send(JSON.stringify({ type: 'subscribe', path: '/posts/live?include=user' })))
+        ws.on('message', (raw: Buffer) => {
+          const msg = JSON.parse(raw.toString()) as { type: string; data: unknown }
+          if (msg.type !== 'update') return
+          if (stage === 'initial') {
+            stage = 'change'
+            users[0] = { id: 1, username: 'alice-updated' }
+            adapter.emit('users', {
+              operation: 'UPDATE',
+              newRow: users[0],
+              oldRow: { id: 1, username: 'alice' },
+              timestamp: Date.now(),
+            })
+          } else {
+            received.push(msg.data)
+            ws.close()
+            resolve()
+          }
+        })
+        ws.on('error', reject)
+        setTimeout(() => {
+          ws.close()
+          reject(new Error('timed out waiting for live include push'))
+        }, 3000)
+      })
+
+      expect(received).toHaveLength(1)
+      expect(received[0]).toEqual([
+        expect.objectContaining({
+          id: 10,
+          user: expect.objectContaining({ id: 1, username: 'alice-updated' }),
+        }),
+      ])
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('recomputes live includes when relation watch tables are declared explicitly', async () => {
+    interface Author { id: number; username: string }
+    interface Entry { id: number; authorId: number; title: string }
+
+    const users: Author[] = [{ id: 1, username: 'alice' }]
+    const entries: Entry[] = [{ id: 10, authorId: 1, title: 'Post A' }]
+
+    const userStore = makeGetManyStore(users)
+    const entryStore = makeGetManyStore(entries, 'posts')
+    const adapter = new MemoryAdapter()
+    const app = createApp({ adapter, port: 0 })
+    app.flow('/posts', entryStore, {
+      relations: { author: { store: userStore, foreignKey: 'authorId', watch: 'users' } },
+      liveInclude: true,
+    })
+    await app.listen()
+    const address = app.getFastify().server.address()
+    const port = typeof address === 'object' && address ? address.port : 3000
+
+    const { WebSocket } = await import('ws')
+    const received: unknown[] = []
+    let stage: 'initial' | 'change' = 'initial'
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+        ws.on('open', () => ws.send(JSON.stringify({ type: 'subscribe', path: '/posts/live?include=author' })))
+        ws.on('message', (raw: Buffer) => {
+          const msg = JSON.parse(raw.toString()) as { type: string; data: unknown }
+          if (msg.type !== 'update') return
+          if (stage === 'initial') {
+            stage = 'change'
+            users[0] = { id: 1, username: 'alice-updated' }
+            adapter.emit('users', {
+              operation: 'UPDATE',
+              newRow: users[0],
+              oldRow: { id: 1, username: 'alice' },
+              timestamp: Date.now(),
+            })
+          } else {
+            received.push(msg.data)
+            ws.close()
+            resolve()
+          }
+        })
+        ws.on('error', reject)
+        setTimeout(() => {
+          ws.close()
+          reject(new Error('timed out waiting for aliased live include push'))
+        }, 3000)
+      })
+
+      expect(received).toHaveLength(1)
+      expect(received[0]).toEqual([
+        expect.objectContaining({
+          id: 10,
+          author: expect.objectContaining({ id: 1, username: 'alice-updated' }),
+        }),
+      ])
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('recomputes scoped live include routes when the relation table changes', async () => {
+    interface RoomUser { id: number; username: string }
+    interface Message { id: number; roomId: number; userId: number; content: string }
+
+    const users: RoomUser[] = [{ id: 1, username: 'alice' }]
+    const messages: Message[] = [{ id: 10, roomId: 7, userId: 1, content: 'hello' }]
+
+    const userStore = makeGetManyStore(users, 'users')
+    const messageStore = makeGetManyStore(messages, 'messages')
+    const adapter = new MemoryAdapter()
+    const app = createApp({ adapter, port: 0 })
+    app.flow('/rooms/:roomId/messages', messageStore, {
+      queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
+      relations: { user: { store: userStore, foreignKey: 'userId' } },
+      liveInclude: true,
+    })
+    await app.listen()
+    const address = app.getFastify().server.address()
+    const port = typeof address === 'object' && address ? address.port : 3000
+
+    const { WebSocket } = await import('ws')
+    const received: unknown[] = []
+    let stage: 'initial' | 'change' = 'initial'
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}`)
+        ws.on('open', () => ws.send(JSON.stringify({ type: 'subscribe', path: '/rooms/7/messages/live?include=user' })))
+        ws.on('message', (raw: Buffer) => {
+          const msg = JSON.parse(raw.toString()) as { type: string; data: unknown }
+          if (msg.type !== 'update') return
+          if (stage === 'initial') {
+            stage = 'change'
+            users[0] = { id: 1, username: 'alice-updated' }
+            adapter.emit('users', {
+              operation: 'UPDATE',
+              newRow: users[0],
+              oldRow: { id: 1, username: 'alice' },
+              timestamp: Date.now(),
+            })
+          } else {
+            received.push(msg.data)
+            ws.close()
+            resolve()
+          }
+        })
+        ws.on('error', reject)
+        setTimeout(() => {
+          ws.close()
+          reject(new Error('timed out waiting for scoped live include push'))
+        }, 3000)
+      })
+
+      expect(received).toHaveLength(1)
+      expect(received[0]).toEqual([
+        expect.objectContaining({
+          id: 10,
+          roomId: 7,
+          user: expect.objectContaining({ id: 1, username: 'alice-updated' }),
+        }),
+      ])
     } finally {
       await app.close()
     }

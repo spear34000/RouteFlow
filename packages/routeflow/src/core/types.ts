@@ -152,6 +152,8 @@ export interface TableStore<T extends { id: number }> {
   seed?(rows: Omit<T, 'id'>[]): Promise<void>
   /** Parent adapter, auto-discovered by flow(). Set by PostgresStore/RouteStore. */
   readonly [ADAPTER_SYMBOL]?: DatabaseAdapter
+  /** Optional table/collection name for reactive dependency inference. */
+  readonly tableName?: string
 }
 
 /**
@@ -227,6 +229,11 @@ export interface FlowRelation {
   store: TableStore<any>  // eslint-disable-line @typescript-eslint/no-explicit-any
   /** Column name on the current table that holds the foreign key. */
   foreignKey: string
+  /**
+   * Table(s) to watch for live include recomputation when the relation store
+   * does not expose `tableName` or when the watch source differs from the alias.
+   */
+  watch?: string | string[]
 }
 
 /**
@@ -259,13 +266,21 @@ export interface FlowOptions {
    *   Ideal for chat / messaging where clients maintain local state and only
    *   need incremental updates.  Latency is dramatically lower under load.
    *
+   * - `'smart'` — uses delta when the live response is simple enough to derive
+   *   directly from the ChangeEvent, otherwise falls back to snapshot mode.
+   *   This is the safest way to get low latency without manually deciding route
+   *   by route.
+   *
    * @example
    * ```ts
    * // Chat messages — push only the new message, not the full history
    * app.flow('/messages', messages, { push: 'delta' })
+   *
+   * // Prefer automatic planning first
+   * app.flow('/messages', messages, { push: 'smart' })
    * ```
    */
-  push?: 'snapshot' | 'delta'
+  push?: 'snapshot' | 'delta' | 'smart'
 
   /**
    * Derive a `WHERE` clause from the request context (path params + query string).
@@ -348,6 +363,12 @@ export interface FlowOptions {
   query?: 'auto' | false
 
   /**
+   * Optional explicit query keys to include in the reactive subscription group key.
+   * Use when automatic inference is insufficient.
+   */
+  liveQueryKeys?: string[]
+
+  /**
    * Filter applied to each reactive push subscriber.
    * Receives the ChangeEvent and the subscriber's Context.
    * Return `true` to push, `false` to skip.
@@ -418,6 +439,12 @@ export interface FlowOptions {
    * ```
    */
   relations?: Record<string, FlowRelation>
+
+  /**
+   * Recompute live responses when included relations change.
+   * One-hop includes only in v1.
+   */
+  liveInclude?: boolean
 }
 
 /**
@@ -541,6 +568,11 @@ export interface ReactiveEndpoint {
    */
   deltaFn?: (event: ChangeEvent) => unknown
   /**
+   * Restrict delta mode to specific watch tables. When omitted, any watched
+   * table can use deltaFn.
+   */
+  deltaWatch?: string[]
+  /**
    * Handler used **only** for the initial push when a client subscribes.
    * Falls back to `handler` when absent.
    *
@@ -549,6 +581,11 @@ export interface ReactiveEndpoint {
    * for snapshot pushes triggered by DB changes.
    */
   initialHandler?: (ctx: Context) => Promise<unknown>
+  /**
+   * Optional grouping signature for query-aware live subscriptions.
+   * Equivalent signatures share one fan-out group.
+   */
+  groupKeyFn?: (ctx: Context) => string | undefined
 }
 
 /** Push function signature used by the engine to deliver updates to a client. */

@@ -133,6 +133,30 @@ describe('ReactiveEngine fan-out', () => {
     expect(delta.operation).toBe('INSERT')
     expect((delta.row as { id: number }).id).toBe(2)
   })
+
+  it('does not duplicate pushes when multiple watched relations resolve to the same table', async () => {
+    const handler = vi.fn(async () => [{ id: 1, name: 'x' }])
+
+    engine.registerEndpoint({
+      routePath: '/items/live',
+      options:   { watch: ['items', 'users', 'users'] },
+      handler,
+    })
+
+    const pushes: unknown[] = []
+    const ctx = { params: {}, query: {}, body: undefined, headers: {} }
+    engine.subscribe('c1', '/items/live', ctx, (_p, d) => pushes.push(d))
+
+    await new Promise(r => setTimeout(r, 30))
+    handler.mockClear()
+    pushes.length = 0
+
+    adapter.emit('users', { operation: 'UPDATE', newRow: { id: 1, name: 'alice' }, oldRow: null })
+    await new Promise(r => setTimeout(r, 30))
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(pushes).toHaveLength(1)
+  })
 })
 
 // ── 2. flow() PATCH support ───────────────────────────────────────────────────
@@ -194,6 +218,102 @@ describe('flow() delta push mode', () => {
       expect(res.status).toBe(200)
       const data = await res.json() as Row[]
       expect(data).toHaveLength(1)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('push:smart emits deltas for simple routes', async () => {
+    const store = makeStore([{ id: 1, name: 'a' }])
+    const { app, adapter, baseUrl } = await startApp(a =>
+      a.flow('/messages', store, { push: 'smart' }),
+    )
+
+    const { WebSocket } = await import('ws')
+    const received: unknown[] = []
+    let stage: 'initial' | 'change' = 'initial'
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(baseUrl.replace('http', 'ws'))
+        ws.on('open', () => ws.send(JSON.stringify({ type: 'subscribe', path: '/messages/live' })))
+        ws.on('message', (raw: Buffer) => {
+          const msg = JSON.parse(raw.toString()) as { type: string; data: unknown }
+          if (msg.type !== 'update') return
+          if (stage === 'initial') {
+            stage = 'change'
+            received.length = 0
+            adapter.emit('messages', {
+              operation: 'INSERT',
+              newRow: { id: 2, name: 'b' },
+              oldRow: null,
+              timestamp: Date.now(),
+            })
+          } else {
+            received.push(msg.data)
+            ws.close()
+            resolve()
+          }
+        })
+        ws.on('error', reject)
+        setTimeout(() => {
+          ws.close()
+          reject(new Error('timed out waiting for smart delta push'))
+        }, 3000)
+      })
+
+      expect(received).toHaveLength(1)
+      expect(received[0]).toMatchObject({
+        operation: 'INSERT',
+        row: { id: 2, name: 'b' },
+      })
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('push:smart falls back to snapshots when query:auto shapes the response', async () => {
+    const store = makeStore([{ id: 1, name: 'a' }])
+    const listSpy = vi.spyOn(store, 'list')
+    const { app, adapter, baseUrl } = await startApp(a =>
+      a.flow('/messages', store, { push: 'smart', query: 'auto' }),
+    )
+
+    const { WebSocket } = await import('ws')
+    const received: unknown[] = []
+    let stage: 'initial' | 'change' = 'initial'
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(baseUrl.replace('http', 'ws'))
+        ws.on('open', () => ws.send(JSON.stringify({ type: 'subscribe', path: '/messages/live?limit=1' })))
+        ws.on('message', (raw: Buffer) => {
+          const msg = JSON.parse(raw.toString()) as { type: string; data: unknown }
+          if (msg.type !== 'update') return
+          if (stage === 'initial') {
+            stage = 'change'
+            listSpy.mockClear()
+            adapter.emit('messages', {
+              operation: 'INSERT',
+              newRow: { id: 2, name: 'b' },
+              oldRow: null,
+              timestamp: Date.now(),
+            })
+          } else {
+            received.push(msg.data)
+            ws.close()
+            resolve()
+          }
+        })
+        ws.on('error', reject)
+        setTimeout(() => {
+          ws.close()
+          reject(new Error('timed out waiting for smart snapshot push'))
+        }, 3000)
+      })
+
+      expect(listSpy).toHaveBeenCalled()
+      expect(Array.isArray(received[0])).toBe(true)
     } finally {
       await app.close()
     }

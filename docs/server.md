@@ -112,6 +112,29 @@ app.register(ItemController)
 app.register(OrderController)  // 여러 컨트롤러 체이닝 가능
 ```
 
+## `app.flow()`에서 많이 쓰는 차별화 옵션
+
+RouteFlow를 단순 "live REST"보다 강하게 만드는 옵션은 아래 셋입니다.
+
+```ts
+app.flow('/rooms/:roomId/messages', messages, {
+  push: 'smart',
+  queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
+  query: 'auto',
+  relations: {
+    author: { store: users, foreignKey: 'authorId' },
+  },
+  liveInclude: true,
+})
+```
+
+- `push: 'smart'`
+  안전하면 delta, 아니면 snapshot으로 자동 fallback 합니다.
+- `queryFilter` + `query: 'auto'`
+  room id, `limit`, `after`, `order` 같은 결과 shape 차이를 live subscription 그룹에 반영합니다.
+- `relations` + `liveInclude: true`
+  `?include=author` 같은 응답을 live로 유지하고, author 변경도 다시 계산합니다.
+
 ## `app.getFastify()`
 
 내부 Fastify 인스턴스를 직접 다룰 수 있습니다. 헬스체크, 정적 파일, 커스텀 미들웨어 추가 시 사용합니다.

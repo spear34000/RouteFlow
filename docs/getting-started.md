@@ -2,9 +2,16 @@
 
 RouteFlow는 기존 REST API처럼 라우트를 만들고, live 엔드포인트에만 `@Reactive`를 붙이는 방식으로 사용합니다.
 
+핵심 메시지는 이 한 줄입니다.
+
+- REST처럼 만든다.
+- 쿼리와 관계까지 이해하는 live 엔드포인트를 붙인다.
+- 바뀐 것만 정확히 다시 밀어준다.
+
 이 문서는 "처음 설치한 사람" 기준으로 작성했습니다.
 
 - 가장 빠른 검증: `Todo` 예제 실행
+- 차별점 확인: `Differentiation` 예제 실행
 - 가장 짧은 코드 이해: SQLite `RouteStore`
 - 그다음 확장: 실제 DB 어댑터 교체
 
@@ -64,6 +71,15 @@ pnpm run example:todos:smoke
 - REST `POST /todos`가 동작한다.
 - `GET /todos/live`를 구독한 클라이언트가 자동 push를 받는다.
 - `/_docs`, `/_health`가 바로 열린다.
+
+차별화 기능까지 바로 보고 싶다면:
+
+```bash
+pnpm run example:differentiation
+pnpm run example:differentiation:smoke
+```
+
+이 예제는 `push: 'smart'`, room-scoped query-aware live, `liveInclude`를 함께 보여줍니다.
 
 ---
 

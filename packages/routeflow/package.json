@@ -1,7 +1,7 @@
 {
   "name": "routeflow-api",
-  "version": "1.0.22",
-  "description": "RouteFlow — REST API with real-time database push subscriptions",
+  "version": "1.0.23",
+  "description": "RouteFlow — query-aware realtime REST API framework with smart delta push and live include",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

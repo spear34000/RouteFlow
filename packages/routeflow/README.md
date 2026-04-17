@@ -1,8 +1,12 @@
 # routeflow-api
 
-RouteFlow — REST API with real-time database push subscriptions
+RouteFlow — query-aware realtime REST API framework with smart delta push and live include
 
-> REST처럼 쓰는데, DB 변경이 생기면 구독 중인 클라이언트에 자동으로 푸시됩니다.
+> REST처럼 쓰는데, 쿼리와 관계까지 이해해서 바뀐 것만 실시간으로 푸시됩니다.
+
+- Query-aware live subscriptions
+- Smart delta push
+- Live include responses
 
 ## Install
 
@@ -23,6 +27,26 @@ npm install routeflow-api pg
 - The SQLite entry now works in both ESM imports and CommonJS `require()`.
 
 ## Usage
+
+### Why it feels different
+
+```typescript
+app.flow('/rooms/:roomId/messages', messages, {
+  push: 'smart',
+  queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
+  query: 'auto',
+  relations: {
+    author: { store: users, foreignKey: 'authorId' },
+  },
+  liveInclude: true,
+})
+```
+
+이 설정 하나로:
+
+- room-scoped live fan-out
+- 안전한 경우 delta, 아니면 snapshot fallback
+- `?include=author` 응답의 relation 변경 재계산
 
 ### Server
 

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import type { ReactiveEngine } from '../reactive/engine.js'
-import { extractParams, pathMatchesPattern } from '../reactive/engine.js'
+import { extractParams, normalizeSubscriptionPath, pathMatchesPattern } from '../reactive/engine.js'
 import type { Context } from '../types.js'
 import { ReactiveApiError } from '../errors.js'
 
@@ -74,7 +74,8 @@ export class SseTransport {
         throw new ReactiveApiError('SSE_INVALID_PATH', 'Path must not contain newline characters')
       }
 
-      const pattern = this.routePatterns.find((p) => pathMatchesPattern(decodedPath, p))
+      const normalized = normalizeSubscriptionPath(decodedPath)
+      const pattern = this.routePatterns.find((p) => pathMatchesPattern(normalized.pathname, p))
 
       if (!pattern) {
         reply.code(404)
@@ -84,12 +85,12 @@ export class SseTransport {
         )
       }
 
-      const params = extractParams(decodedPath, pattern)
+      const params = extractParams(normalized.pathname, pattern)
 
       // Build a clean query object — strip 'path' and guard against prototype
       // pollution via keys like '__proto__', 'constructor', 'prototype'.
       const dangerousKeys = new Set(['__proto__', 'constructor', 'prototype'])
-      const clientQuery: Record<string, string> = Object.create(null)
+      const clientQuery: Record<string, string> = { ...normalized.query }
       for (const [k, v] of Object.entries(query)) {
         if (k !== 'path' && !dangerousKeys.has(k) && typeof v === 'string') {
           clientQuery[k] = v

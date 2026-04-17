@@ -16,13 +16,17 @@
     "example:todos": "PORT=3020 DB_PATH=./data/todos.db pnpm exec tsx examples/basic/src/server-todos.ts",
     "example:todos:sse": "PORT=3021 DB_PATH=./data/todos.db ROUTEFLOW_TRANSPORT=sse pnpm exec tsx examples/basic/src/server-todos.ts",
     "example:todos:smoke": "pnpm exec tsx examples/basic/src/smoke-todos.ts",
+    "example:differentiation": "PORT=3030 DB_PATH=./data/differentiation.db pnpm exec tsx examples/basic/src/server-differentiation.ts",
+    "example:differentiation:sse": "PORT=3031 DB_PATH=./data/differentiation.db ROUTEFLOW_TRANSPORT=sse pnpm exec tsx examples/basic/src/server-differentiation.ts",
+    "example:differentiation:smoke": "pnpm exec tsx examples/basic/src/smoke-differentiation.ts",
     "example:board": "PORT=3010 DB_PATH=./data/board.db pnpm exec tsx examples/basic/src/server-board.ts",
     "example:board:sse": "PORT=3010 DB_PATH=./data/board.db ROUTEFLOW_TRANSPORT=sse pnpm exec tsx examples/basic/src/server-board.ts",
     "example:chat": "PORT=3011 DB_PATH=./data/chat.db pnpm exec tsx examples/basic/src/server-chat.ts",
     "example:chat:sse": "PORT=3011 DB_PATH=./data/chat.db ROUTEFLOW_TRANSPORT=sse pnpm exec tsx examples/basic/src/server-chat.ts",
     "example:postgres": "PORT=3002 pnpm exec tsx examples/basic/src/server-postgres.ts",
     "example:postgres:sse": "PORT=3003 ROUTEFLOW_TRANSPORT=sse pnpm exec tsx examples/basic/src/server-postgres.ts",
-    "example:client": "pnpm exec tsx examples/basic/src/client-demo.ts"
+    "example:client": "pnpm exec tsx examples/basic/src/client-demo.ts",
+    "test:e2e": "pnpm exec tsx tests/full-e2e.ts"
   },
   "devDependencies": {
     "routeflow-api": "workspace:*",

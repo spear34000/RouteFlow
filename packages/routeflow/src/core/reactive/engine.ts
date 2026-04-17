@@ -68,6 +68,27 @@ export function extractParams(concretePath: string, pattern: string): Record<str
   return Object.fromEntries(paramNames.map((name, i) => [name, match[i + 1]!]))
 }
 
+export function normalizeSubscriptionPath(rawPath: string): {
+  pathname: string
+  query: Record<string, string>
+} {
+  const [pathnamePart, queryString = ''] = rawPath.split('?', 2)
+  const pathname = pathnamePart || '/'
+  const params = new URLSearchParams(queryString)
+  const query: Record<string, string> = Object.create(null)
+  for (const [key, value] of params.entries()) query[key] = value
+  return { pathname, query }
+}
+
+export function stableSerialize(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => stableSerialize(item)).join(',')}]`
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableSerialize(item)}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
 // ── ReactiveEngine ─────────────────────────────────────────────────────────────
 
 interface Subscription {
@@ -157,7 +178,7 @@ export class ReactiveEngine {
 
   registerEndpoint(endpoint: ReactiveEndpoint): void {
     this.endpoints.push(endpoint)
-    for (const table of normalizeWatch(endpoint.options.watch)) {
+    for (const table of new Set(normalizeWatch(endpoint.options.watch))) {
       this.setupTableWatcher(table)
       // Build reverse index: table → [endpoints]
       const list = this.tableToEndpoints.get(table)
@@ -177,13 +198,15 @@ export class ReactiveEngine {
     pushSerializedFn?: (serialized: string) => void,
   ): void {
     this.subscriptions.set(clientId, { clientId, path, ctx, pushFn, pushSerializedFn })
+    const { pathname } = normalizeSubscriptionPath(path)
 
     // Single pass over endpoints:
     // 1. Build subscription reverse index (subscriptionsByEndpoint)
     // 2. Kick off initial pushes — both share the same pathMatchesPattern test.
     const clientPairs: Array<[string, string]> = []
     for (const endpoint of this.endpoints) {
-      if (!pathMatchesPattern(path, endpoint.routePath)) continue
+      if (!pathMatchesPattern(pathname, endpoint.routePath)) continue
+      const groupKey = buildGroupKey(endpoint, pathname, ctx)
 
       // ── Update reverse index ─────────────────────────────────────────────
       let groups = this.subscriptionsByEndpoint.get(endpoint.routePath)
@@ -191,13 +214,13 @@ export class ReactiveEngine {
         groups = new Map<string, Set<string>>()
         this.subscriptionsByEndpoint.set(endpoint.routePath, groups)
       }
-      let clientSet = groups.get(path)
+      let clientSet = groups.get(groupKey)
       if (!clientSet) {
         clientSet = new Set<string>()
-        groups.set(path, clientSet)
+        groups.set(groupKey, clientSet)
       }
       clientSet.add(clientId)
-      clientPairs.push([endpoint.routePath, path])
+      clientPairs.push([endpoint.routePath, groupKey])
 
       // ── Initial push ─────────────────────────────────────────────────────
       // Push current state immediately so the client has data without waiting
@@ -346,7 +369,9 @@ export class ReactiveEngine {
       // If the endpoint exposes a fast-path delta function, use it so we skip
       // the DB re-query entirely.  Falls back to the full handler otherwise.
       const data = endpoint.deltaFn
-        ? endpoint.deltaFn(event)
+        ? shouldUseDelta(endpoint, event)
+          ? endpoint.deltaFn(event)
+          : await endpoint.handler(sub.ctx)
         : await endpoint.handler(sub.ctx)
 
       let hasConnected = false
@@ -368,10 +393,18 @@ export class ReactiveEngine {
       // once and hand the pre-built string to each WS socket directly — saving
       // N−1 serialize calls for N connected clients.
       if (allHaveFastPath) {
-        const serialized = JSON.stringify({ type: 'update', path: sub.path, data })
-        for (const s of subs) {
-          if (!this.subscriptions.has(s.clientId)) continue
-          s.pushSerializedFn!(serialized)
+        const samePath = subs.every((s) => s.path === sub.path)
+        if (samePath) {
+          const serialized = JSON.stringify({ type: 'update', path: sub.path, data })
+          for (const s of subs) {
+            if (!this.subscriptions.has(s.clientId)) continue
+            s.pushSerializedFn!(serialized)
+          }
+        } else {
+          for (const s of subs) {
+            if (!this.subscriptions.has(s.clientId)) continue
+            s.pushFn(s.path, data)
+          }
         }
       } else {
         for (const s of subs) {
@@ -436,4 +469,17 @@ export class ReactiveEngine {
 /** Normalise `watch` to a guaranteed string array. */
 function normalizeWatch(watch: string | string[]): string[] {
   return Array.isArray(watch) ? watch : [watch]
+}
+
+function buildGroupKey(endpoint: ReactiveEndpoint, pathname: string, ctx: Context): string {
+  const signature = endpoint.groupKeyFn?.(ctx)
+  return signature ? `${pathname}?${signature}` : ctx.query && Object.keys(ctx.query).length > 0
+    ? `${pathname}?${new URLSearchParams(ctx.query).toString()}`
+    : pathname
+}
+
+function shouldUseDelta(endpoint: ReactiveEndpoint, event: ChangeEvent): boolean {
+  if (!endpoint.deltaFn) return false
+  if (!endpoint.deltaWatch?.length) return true
+  return endpoint.deltaWatch.includes(event.table)
 }

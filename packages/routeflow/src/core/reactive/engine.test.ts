@@ -324,4 +324,38 @@ describe('ReactiveEngine', () => {
     expect(pushed).toHaveBeenCalledTimes(2)
     vi.useRealTimers()
   })
+
+  it('keeps query-distinct subscriptions separate when no groupKeyFn is provided', async () => {
+    const pushedOpen = vi.fn()
+    const pushedClosed = vi.fn()
+
+    engine.registerEndpoint({
+      routePath: '/items/live',
+      options: { watch: 'items' },
+      handler: async (ctx) => [{ status: ctx.query['status'] }],
+    })
+
+    engine.subscribe(
+      'client-open',
+      '/items/live?status=open',
+      { ...makeCtx(), query: { status: 'open' } },
+      pushedOpen,
+    )
+    engine.subscribe(
+      'client-closed',
+      '/items/live?status=closed',
+      { ...makeCtx(), query: { status: 'closed' } },
+      pushedClosed,
+    )
+
+    await Promise.resolve()
+    pushedOpen.mockClear()
+    pushedClosed.mockClear()
+
+    adapter.emit('items', { operation: 'INSERT', newRow: { id: 1 }, oldRow: null })
+    await Promise.resolve()
+
+    expect(pushedOpen).toHaveBeenCalledWith('/items/live?status=open', [{ status: 'open' }])
+    expect(pushedClosed).toHaveBeenCalledWith('/items/live?status=closed', [{ status: 'closed' }])
+  })
 })

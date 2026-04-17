@@ -73,9 +73,32 @@ npm install routeflow-api ioredis   # Redis
 실제 프로젝트에서는 아래 순서가 가장 덜 위험합니다.
 
 1. `Todo` 예제나 `MemoryAdapter`로 전체 흐름을 먼저 확인한다.
-2. 로컬에서는 `RouteStore`로 API 형태와 live 엔드포인트를 고정한다.
-3. 운영 직전에 `TableStore<T>` 인터페이스를 유지한 채 Postgres 같은 실제 DB로 바꾼다.
-4. 마지막으로 `/_health`, request tracing, graceful shutdown을 점검한다.
+2. `Differentiation` 예제로 `push: 'smart'`, query-aware live, `liveInclude`를 확인한다.
+3. 로컬에서는 `RouteStore`로 API 형태와 live 엔드포인트를 고정한다.
+4. 운영 직전에 `TableStore<T>` 인터페이스를 유지한 채 Postgres 같은 실제 DB로 바꾼다.
+5. 마지막으로 `/_health`, request tracing, graceful shutdown을 점검한다.
+
+## RouteFlow를 RouteFlow답게 쓰는 법
+
+아래 세 가지를 먼저 떠올리면 설계가 훨씬 깔끔해집니다.
+
+1. 단순 append/feed형 live route는 `push: 'smart'`부터 쓴다.
+2. room, team, project 같은 상위 자원 범위는 `queryFilter`로 고정한다.
+3. 화면이 `?include=author` 같은 조합 응답을 직접 쓰면 `liveInclude: true`를 켠다.
+
+예시:
+
+```ts
+app.flow('/rooms/:roomId/messages', messages, {
+  push: 'smart',
+  queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
+  query: 'auto',
+  relations: {
+    author: { store: users, foreignKey: 'authorId' },
+  },
+  liveInclude: true,
+})
+```
 
 ---
 
