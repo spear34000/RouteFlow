@@ -238,6 +238,8 @@ export class ReactiveClient {
     body?: unknown,
     query?: Record<string, string>,
     extraHeaders?: Record<string, string>,
+    /** Internal flag — prevents infinite retry loops on 401 */
+    _isRetry = false,
   ): Promise<T> {
     let url = `${this.baseUrl}${path}`
 
@@ -265,6 +267,20 @@ export class ReactiveClient {
         'NETWORK_ERROR',
         `Network request failed: ${err instanceof Error ? err.message : String(err)}`,
       )
+    }
+
+    // ── 401 token-refresh retry ──────────────────────────────────────────────
+    // On the first 401, ask the application to refresh its access token.
+    // If the hook returns a new token string, retry the request once with the
+    // updated Authorization header.  A second 401 propagates normally so we
+    // never loop.
+    if (response.status === 401 && !_isRetry && this.options.onUnauthorized) {
+      const newToken = await this.options.onUnauthorized()
+      if (typeof newToken === 'string') {
+        // Update the default headers so subsequent requests also use the new token.
+        this.defaultHeaders['Authorization'] = `Bearer ${newToken}`
+        return this.request<T>(method, path, body, query, extraHeaders, true)
+      }
     }
 
     if (!response.ok) {

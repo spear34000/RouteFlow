@@ -79,7 +79,12 @@ adapter.emit('items', {
 **로컬 개발 또는 단일 서버 운영**에 권장합니다.
 
 `RouteStore`는 `DatabaseAdapter`와 테이블 CRUD를 하나로 통합합니다.
-Node.js 22.5+ 내장 `node:sqlite`를 사용하므로 추가 패키지가 없습니다.
+Node.js 22.13+ 내장 `node:sqlite`를 사용하므로 추가 패키지가 없습니다.
+
+권장 런타임:
+
+- 2026-04-17 기준 최신 LTS `Node.js 24.15.0 (LTS)`
+- CommonJS 프로젝트에서도 `require('routeflow-api/sqlite')` 사용 가능
 
 ```ts
 import { createApp } from 'routeflow-api'
@@ -97,7 +102,13 @@ await items.seed([{ name: 'Apple', createdAt: '2026-01-01T00:00:00.000Z' }])
 const app = createApp({ adapter: db, port: 3000 })
 ```
 
+```js
+const { RouteStore } = require('routeflow-api/sqlite')
+```
+
 `create()`, `update()`, `delete()` 호출 시 변경 이벤트가 자동으로 발생해 `@Reactive` 엔드포인트가 즉시 push됩니다.
+
+v1.0.22부터는 테이블별 64개 LRU statement cache가 적용되어 반복 CRUD 쿼리의 parse/compile 비용을 줄입니다.
 
 ### 컬럼 타입
 

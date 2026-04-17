@@ -17,17 +17,31 @@ import {
  * stays open and notifications are never missed. A separate pool/client
  * can still be used by the application for regular queries.
  *
- * Change detection mechanism:
- * - On `onChange(table)`: installs a per-table AFTER INSERT/UPDATE/DELETE trigger
- *   that calls `pg_notify` with a JSON payload.
+ * ## Change detection
+ * - `onChange(table)` installs a per-table `AFTER INSERT|UPDATE|DELETE` trigger
+ *   that calls `pg_notify` with a JSON payload (table, operation, new_row, old_row,
+ *   event_time).
  * - A single LISTEN connection subscribes to one shared channel for all tables.
  * - Payloads > 7900 bytes are sent without row data (`_truncated: true`);
- *   subscribers receive a ChangeEvent with `newRow: null` / `oldRow: null`.
+ *   subscribers receive a `ChangeEvent` with `newRow: null` / `oldRow: null`.
+ *   `event_time` is always included even in truncated payloads.
+ *
+ * ## Pre-connect registration
+ * `onChange()` may be called **before** `connect()` (the engine registers listeners
+ * at startup, then the app calls `connect()`). Triggers for all pre-registered tables
+ * are installed automatically inside `connect()`.
+ *
+ * ## Auto-reconnect
+ * When the LISTEN client disconnects unexpectedly, the adapter reconnects with
+ * exponential backoff (configurable via `maxReconnectAttempts` / `reconnectDelayMs`).
+ * All active table triggers persist in the database across reconnects; no re-installation
+ * is needed.
  *
  * @example
  * ```ts
  * const adapter = new PostgresAdapter({
  *   connectionString: process.env.DATABASE_URL,
+ *   onError: (err) => myLogger.error(err),
  * })
  * await adapter.connect()
  * ```
@@ -37,67 +51,45 @@ export class PostgresAdapter implements DatabaseAdapter {
   private readonly schema: string
   private readonly prefix: string
   private readonly connectionString: string
+  private readonly onError?: (error: Error) => void
+  private readonly maxReconnectAttempts: number
+  private readonly reconnectDelayMs: number
+  /** true after disconnect() is called — prevents auto-reconnect */
+  private closed = false
 
   /** table → Set<callback> */
   private readonly listeners: Map<string, Set<(event: ChangeEvent) => void>> = new Map()
-  /** Tables for which a trigger has already been installed */
+  /** Tables for which a trigger has already been installed in the DB */
   private readonly installedTriggers: Set<string> = new Set()
 
   constructor(options: PostgresAdapterOptions) {
     this.connectionString = options.connectionString
     this.schema = options.schema ?? 'public'
     this.prefix = options.triggerPrefix ?? 'reactive_api'
+    this.onError = options.onError
+    this.maxReconnectAttempts = options.maxReconnectAttempts ?? 10
+    this.reconnectDelayMs = options.reconnectDelayMs ?? 500
   }
 
   // ---------------------------------------------------------------------------
-  // DatabaseAdapter interface
+  // Public API
   // ---------------------------------------------------------------------------
+
+  /** True when the LISTEN client is connected. */
+  get isConnected(): boolean {
+    return this.listenClient !== null
+  }
 
   /** Connect the LISTEN client and install the shared trigger function. */
   async connect(): Promise<void> {
     if (this.listenClient) return
-
-    const client = new Client({ connectionString: this.connectionString })
-    try {
-      await client.connect()
-    } catch (err) {
-      throw new ReactiveApiError(
-        'POSTGRES_CONNECT_FAILED',
-        `Failed to connect to PostgreSQL: ${errorMessage(err)}`,
-      )
-    }
-
-    // Install (or replace) the shared trigger function once per connection
-    try {
-      await client.query(createTriggerFunctionSQL(this.schema, this.prefix))
-    } catch (err) {
-      await client.end().catch(() => undefined)
-      throw new ReactiveApiError(
-        'POSTGRES_TRIGGER_FUNCTION_FAILED',
-        `Failed to install trigger function: ${errorMessage(err)}`,
-      )
-    }
-
-    // Start listening on the shared channel
-    const channel = notifyChannel(this.prefix)
-    await client.query(`LISTEN "${channel}"`)
-
-    client.on('notification', (msg) => {
-      if (msg.channel !== channel || !msg.payload) return
-      this.handleNotification(msg.payload)
-    })
-
-    client.on('error', (err) => {
-      // Log but don't crash — the adapter becomes unavailable; the app can
-      // call disconnect() + connect() to recover.
-      console.error('[RouteFlow/postgres] LISTEN client error:', err.message)
-    })
-
-    this.listenClient = client
+    this.closed = false
+    await this.connectCore()
   }
 
-  /** Disconnect the LISTEN client and optionally clean up triggers. */
+  /** Disconnect the LISTEN client and drop all installed triggers + the trigger function. */
   async disconnect(): Promise<void> {
+    this.closed = true
     if (!this.listenClient) return
 
     const client = this.listenClient
@@ -121,7 +113,10 @@ export class PostgresAdapter implements DatabaseAdapter {
 
   /**
    * Register a callback for changes on `table`.
-   * Installs a PostgreSQL trigger on first registration for this table.
+   *
+   * Safe to call **before** `connect()` — the trigger is installed during
+   * `connect()` for any pre-registered table. If called after `connect()`,
+   * the trigger is installed immediately (asynchronously).
    *
    * @returns An unsubscribe function.
    */
@@ -131,14 +126,15 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
     this.listeners.get(table)!.add(callback)
 
-    // Install trigger asynchronously; errors are surfaced to the console
-    // rather than throwing so registration can happen before connect().
-    this.ensureTriggerInstalled(table).catch((err) => {
-      console.error(
-        `[RouteFlow/postgres] Failed to install trigger for table "${table}":`,
-        errorMessage(err),
-      )
-    })
+    // If already connected, install the trigger now.
+    // If not connected yet, connectCore() will install it on connect.
+    if (this.listenClient) {
+      this.ensureTriggerInstalled(table).catch((err) => {
+        this.emitError(
+          new Error(`[RouteFlow/postgres] Failed to install trigger for table "${table}": ${errorMessage(err)}`),
+        )
+      })
+    }
 
     return () => {
       this.listeners.get(table)?.delete(callback)
@@ -146,12 +142,118 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   // ---------------------------------------------------------------------------
-  // Private helpers
+  // Private — connection lifecycle
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Core connect implementation — creates a new pg.Client, installs the trigger
+   * function, starts listening, and installs triggers for any pre-registered tables.
+   */
+  private async connectCore(): Promise<void> {
+    const client = new Client({ connectionString: this.connectionString })
+
+    try {
+      await client.connect()
+    } catch (err) {
+      throw new ReactiveApiError(
+        'POSTGRES_CONNECT_FAILED',
+        `Failed to connect to PostgreSQL: ${errorMessage(err)}`,
+      )
+    }
+
+    // Install (or replace) the shared trigger function
+    try {
+      await client.query(createTriggerFunctionSQL(this.schema, this.prefix))
+    } catch (err) {
+      await client.end().catch(() => undefined)
+      throw new ReactiveApiError(
+        'POSTGRES_TRIGGER_FUNCTION_FAILED',
+        `Failed to install trigger function: ${errorMessage(err)}`,
+      )
+    }
+
+    // Start listening on the shared channel
+    const channel = notifyChannel(this.prefix)
+    await client.query(`LISTEN "${channel}"`)
+
+    client.on('notification', (msg) => {
+      if (msg.channel !== channel || !msg.payload) return
+      this.handleNotification(msg.payload)
+    })
+
+    client.on('error', (err) => {
+      // Log but don't crash — 'end' will follow and trigger reconnect.
+      this.emitError(
+        new Error(`[RouteFlow/postgres] LISTEN client error: ${err.message}`),
+      )
+    })
+
+    client.on('end', () => {
+      if (this.closed) return
+      this.listenClient = null
+      void this.scheduleReconnect(0)
+    })
+
+    this.listenClient = client
+
+    // ── Bug fix: install triggers for tables registered before connect() ──────
+    // ensureTriggerInstalled() returns early when listenClient is null.
+    // Now that the client is ready, install any pending tables.
+    for (const table of this.listeners.keys()) {
+      if (!this.installedTriggers.has(table)) {
+        this.ensureTriggerInstalled(table).catch((err) => {
+          this.emitError(
+            new Error(`[RouteFlow/postgres] Failed to install trigger for table "${table}": ${errorMessage(err)}`),
+          )
+        })
+      }
+    }
+  }
+
+  /**
+   * Reconnect with exponential backoff after an unexpected disconnect.
+   * Triggers are DDL — they persist in the DB; no re-installation needed.
+   * Only the trigger function (idempotent `CREATE OR REPLACE`) and LISTEN are restored.
+   */
+  private async scheduleReconnect(attempt: number): Promise<void> {
+    if (this.closed) return
+
+    if (attempt >= this.maxReconnectAttempts) {
+      this.emitError(
+        new Error(
+          `[RouteFlow/postgres] Max reconnect attempts (${this.maxReconnectAttempts}) reached — giving up`,
+        ),
+      )
+      return
+    }
+
+    // Exponential backoff, capped at 30 s
+    const delayMs = Math.min(this.reconnectDelayMs * 2 ** attempt, 30_000)
+    await sleep(delayMs)
+
+    if (this.closed) return
+
+    try {
+      await this.connectCore()
+      // Success — reset: any new listeners added during outage get triggers installed
+      // inside connectCore() already.
+    } catch (err) {
+      this.emitError(
+        new Error(
+          `[RouteFlow/postgres] Reconnect attempt ${attempt + 1} failed: ${errorMessage(err)}`,
+        ),
+      )
+      void this.scheduleReconnect(attempt + 1)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private — trigger management
   // ---------------------------------------------------------------------------
 
   private async ensureTriggerInstalled(table: string): Promise<void> {
     if (this.installedTriggers.has(table)) return
-    if (!this.listenClient) return // will be retried via connect() flow
+    if (!this.listenClient) return // will be called again from connectCore()
 
     try {
       await this.listenClient.query(
@@ -168,6 +270,10 @@ export class PostgresAdapter implements DatabaseAdapter {
       throw err
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Private — NOTIFY handling
+  // ---------------------------------------------------------------------------
 
   private handleNotification(rawPayload: string): void {
     let payload: unknown
@@ -188,7 +294,9 @@ export class PostgresAdapter implements DatabaseAdapter {
       operation: payload.operation,
       newRow: payload.new_row,
       oldRow: payload.old_row,
-      timestamp: Date.now(),
+      // Use DB-side clock_timestamp() when available — more accurate than Node Date.now()
+      // for distributed setups where server clocks may differ.
+      timestamp: payload.event_time ?? Date.now(),
     }
 
     const callbacks = this.listeners.get(payload.table)
@@ -198,11 +306,27 @@ export class PostgresAdapter implements DatabaseAdapter {
       try {
         cb(event)
       } catch (err) {
-        console.error(
-          `[RouteFlow/postgres] Listener error on table "${payload.table}":`,
-          errorMessage(err),
+        this.emitError(
+          new Error(`[RouteFlow/postgres] Listener error on table "${payload.table}": ${errorMessage(err)}`),
         )
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private — error emission
+  // ---------------------------------------------------------------------------
+
+  private emitError(err: Error): void {
+    if (this.onError) {
+      try {
+        this.onError(err)
+      } catch {
+        // Never let the error handler crash the adapter
+        console.error('[RouteFlow/postgres] onError handler threw:', err.message)
+      }
+    } else {
+      console.error(err.message)
     }
   }
 }
@@ -224,4 +348,8 @@ function isNotifyPayload(value: unknown): value is NotifyPayload {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

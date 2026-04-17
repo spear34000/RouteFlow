@@ -55,6 +55,8 @@ const app = createApp({
 | `transport` | `'websocket' \| 'sse'` | `'websocket'` | 실시간 전송 방식 |
 | `port` | `number` | `3000` | 서버 리슨 포트 |
 
+`createApp()`으로 만든 앱은 `GET /_health`를 자동 등록하고, 모든 HTTP 요청에 `X-Request-ID`를 생성 또는 전달합니다.
+
 ## `@Route(method, path)`
 
 일반 HTTP 엔드포인트를 등록합니다.
@@ -72,6 +74,7 @@ async getItem(ctx: Context) {
 - 쿼리 파라미터 `ctx.query`
 - 요청 바디 `ctx.body`
 - 요청 헤더 `ctx.headers`
+- 요청 추적 ID `ctx.requestId`
 
 ## `@Reactive(options)`
 
@@ -134,6 +137,38 @@ await app.listen(8080)     // 포트 재정의
 
 ```ts
 await app.close()
+```
+
+`app.listen()`으로 시작한 프로세스는 기본적으로 `SIGTERM`, `SIGINT`를 잡아 graceful shutdown을 수행합니다. 컨테이너 환경에서는 최대 10초 동안 in-flight 작업을 정리한 뒤 종료합니다.
+
+## 기본 운영 엔드포인트
+
+### `GET /_health`
+
+별도 등록 없이 아래 헬스체크가 제공됩니다.
+
+```json
+{
+  "status": "ok",
+  "uptime": 123,
+  "timestamp": "2026-04-17T00:00:00.000Z"
+}
+```
+
+### `ctx.requestId` / `X-Request-ID`
+
+RouteFlow는 각 HTTP 요청마다 request id를 보장합니다.
+
+- `X-Request-ID` 헤더가 들어오면 그대로 사용
+- 없으면 서버가 새 ID를 생성
+- 응답 헤더에도 같은 값을 기록
+- 미들웨어와 핸들러에서는 `ctx.requestId`로 접근
+
+```ts
+app.use(async (ctx, next) => {
+  console.log(`[${ctx.requestId}] ${ctx.params.userId ?? 'anonymous'}`)
+  await next()
+})
 ```
 
 ## `.routeflow/info.json`

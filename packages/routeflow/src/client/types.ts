@@ -30,6 +30,28 @@ export interface ClientOptions {
    * over the real-time channel, or when a subscription callback throws.
    */
   onError?: (error: { code: string; message: string }) => void
+
+  /**
+   * Called when any HTTP request receives a **401 Unauthorized** response.
+   *
+   * Return a new bearer token string to **retry the request once** with an
+   * updated `Authorization: Bearer <token>` header — ideal for mobile apps
+   * where JWTs expire during long sessions.
+   *
+   * Return `null` or `undefined` to propagate the 401 error normally.
+   *
+   * @example
+   * ```ts
+   * const client = createClient('https://api.example.com', {
+   *   headers: { Authorization: `Bearer ${await getStoredToken()}` },
+   *   onUnauthorized: async () => {
+   *     const newToken = await refreshAccessToken()
+   *     return newToken  // retry with this token
+   *   },
+   * })
+   * ```
+   */
+  onUnauthorized?: () => Promise<string | null | undefined>
 }
 
 /**

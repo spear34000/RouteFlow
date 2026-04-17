@@ -6,14 +6,77 @@ import type {
   ReactiveEndpoint,
 } from '../types.js'
 
-// Compiled path-pattern regexes are reused across all ChangeEvents.
-const patternRegexCache = new Map<string, RegExp>()
+// ── Pattern cache ──────────────────────────────────────────────────────────────
+// Regex + param-name list are stored together to avoid compiling the same pattern
+// twice.  The cache is capped at MAX_PATTERN_CACHE entries; when the cap is hit
+// the oldest entry (Maps preserve insertion order) is evicted before inserting,
+// giving a simple O(1) LRU approximation with zero extra bookkeeping.
+
+const MAX_PATTERN_CACHE = 512
+const patternCache = new Map<string, { regex: RegExp; paramNames: string[] }>()
+
+function getPatternEntry(pattern: string): { regex: RegExp; paramNames: string[] } {
+  const existing = patternCache.get(pattern)
+  if (existing) {
+    // True LRU: re-insert to move this entry to the "most recently used" end.
+    // Maps preserve insertion order; the first key is always the least-recently-used.
+    patternCache.delete(pattern)
+    patternCache.set(pattern, existing)
+    return existing
+  }
+
+  // Cache miss — compile the regex and param-name list together.
+  const paramNames: string[] = []
+  const src = pattern
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, name: string) => {
+      paramNames.push(name)
+      return '([^/]+)'
+    })
+  const entry = { regex: new RegExp(`^${src}$`), paramNames }
+
+  if (patternCache.size >= MAX_PATTERN_CACHE) {
+    // Evict least-recently-used (first key in insertion order).
+    const lru = patternCache.keys().next().value
+    if (lru !== undefined) patternCache.delete(lru)
+  }
+  patternCache.set(pattern, entry)
+  return entry
+}
+
+/**
+ * Returns true if a concrete path matches a route pattern with named params.
+ * Compiled regexes are cached (LRU, max 512) by pattern string.
+ *
+ * pathMatchesPattern('/orders/123/live', '/orders/:userId/live') → true
+ * pathMatchesPattern('/orders/123/live', '/items/:id/live')      → false
+ */
+export function pathMatchesPattern(concretePath: string, pattern: string): boolean {
+  return getPatternEntry(pattern).regex.test(concretePath)
+}
+
+/**
+ * Extract named path params from a concrete path given a route pattern.
+ * Shares the same cached regex as pathMatchesPattern — one compilation per pattern.
+ *
+ * extractParams('/orders/123/live', '/orders/:userId/live') → { userId: '123' }
+ */
+export function extractParams(concretePath: string, pattern: string): Record<string, string> {
+  const { regex, paramNames } = getPatternEntry(pattern)
+  const match = concretePath.match(regex)
+  if (!match) return {}
+  return Object.fromEntries(paramNames.map((name, i) => [name, match[i + 1]!]))
+}
+
+// ── ReactiveEngine ─────────────────────────────────────────────────────────────
 
 interface Subscription {
   clientId: string
   path: string
   ctx: Context
   pushFn: PushFn
+  /** Pre-serialization fast path: WS transport provides this to avoid N × JSON.stringify */
+  pushSerializedFn?: (serialized: string) => void
 }
 
 /**
@@ -30,6 +93,22 @@ interface Subscription {
  * single handler invocation per ChangeEvent.  The handler is called **once**
  * per unique concrete path and the result is pushed to every subscriber in
  * that group — avoiding N DB queries for N connected clients.
+ *
+ * ## O(1) event routing
+ * Two reverse indexes eliminate per-event iteration of all subscribers:
+ *
+ * • `tableToEndpoints`  — table name → endpoints that watch it.
+ *   `onChangeEvent` skips all endpoints that don't watch the changed table.
+ *
+ * • `subscriptionsByEndpoint` — endpointPattern → concretePath → Set<clientId>.
+ *   Built on `subscribe()`, maintained on `unsubscribe()`.  On a ChangeEvent the
+ *   engine looks up matching subscriber groups in O(1) instead of regex-testing
+ *   every active subscription.
+ *
+ * ### Why this matters for chat / room-scoped apps
+ * 50,000 subscriptions across 1,000 rooms (50 per room):
+ * - Before: 50,000 regex tests to find the 50 subscribers in room 42.
+ * - After:  1 map lookup → 1 set of 50 clientIds → 50 filter checks.
  */
 export class ReactiveEngine {
   private readonly endpoints: ReactiveEndpoint[] = []
@@ -41,25 +120,93 @@ export class ReactiveEngine {
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** clientId → Set of timerKeys — O(1) cleanup on disconnect */
   private readonly clientTimers = new Map<string, Set<string>>()
+  /** table → endpoints watching it — O(1) lookup in onChangeEvent */
+  private readonly tableToEndpoints = new Map<string, ReactiveEndpoint[]>()
+  /**
+   * Subscription reverse index: endpointPattern → concretePath → Set<clientId>.
+   * Maintained on every subscribe/unsubscribe so fan-out routing is O(1).
+   */
+  private readonly subscriptionsByEndpoint = new Map<string, Map<string, Set<string>>>()
+  /**
+   * Per-client reverse pointer: clientId → [endpointPattern, concretePath] pairs.
+   * Used by unsubscribe() to remove the client from subscriptionsByEndpoint in O(1).
+   */
+  private readonly clientEndpointPaths = new Map<string, Array<[string, string]>>()
 
-  constructor(private readonly adapter: DatabaseAdapter) {}
+  /** Registered adapter set — supports multiple adapters for multi-DB flows. */
+  private readonly adapters = new Set<DatabaseAdapter>()
+
+  constructor(adapter: DatabaseAdapter | null) {
+    if (adapter) this.adapters.add(adapter)
+  }
+
+  /**
+   * Register an additional adapter (called by flow() when a store carries ADAPTER_SYMBOL).
+   * Idempotent — adding the same adapter twice is a no-op.
+   */
+  registerAdapter(adapter: DatabaseAdapter): void {
+    if (this.adapters.has(adapter)) return
+    this.adapters.add(adapter)
+    // Re-wire any already-registered endpoints that reference tables on this adapter.
+    for (const endpoint of this.endpoints) {
+      for (const table of normalizeWatch(endpoint.options.watch)) {
+        this.setupTableWatcher(table)
+      }
+    }
+  }
 
   registerEndpoint(endpoint: ReactiveEndpoint): void {
     this.endpoints.push(endpoint)
     for (const table of normalizeWatch(endpoint.options.watch)) {
       this.setupTableWatcher(table)
+      // Build reverse index: table → [endpoints]
+      const list = this.tableToEndpoints.get(table)
+      if (list) {
+        list.push(endpoint)
+      } else {
+        this.tableToEndpoints.set(table, [endpoint])
+      }
     }
   }
 
-  subscribe(clientId: string, path: string, ctx: Context, pushFn: PushFn): void {
-    this.subscriptions.set(clientId, { clientId, path, ctx, pushFn })
+  subscribe(
+    clientId: string,
+    path: string,
+    ctx: Context,
+    pushFn: PushFn,
+    pushSerializedFn?: (serialized: string) => void,
+  ): void {
+    this.subscriptions.set(clientId, { clientId, path, ctx, pushFn, pushSerializedFn })
 
-    // Immediately push current state so the client has data without waiting for
-    // the first DB change event (eliminates the separate get() + subscribe() dance).
+    // Single pass over endpoints:
+    // 1. Build subscription reverse index (subscriptionsByEndpoint)
+    // 2. Kick off initial pushes — both share the same pathMatchesPattern test.
+    const clientPairs: Array<[string, string]> = []
     for (const endpoint of this.endpoints) {
-      if (pathMatchesPattern(path, endpoint.routePath)) {
-        void this.initialPush(clientId, endpoint)
+      if (!pathMatchesPattern(path, endpoint.routePath)) continue
+
+      // ── Update reverse index ─────────────────────────────────────────────
+      let groups = this.subscriptionsByEndpoint.get(endpoint.routePath)
+      if (!groups) {
+        groups = new Map<string, Set<string>>()
+        this.subscriptionsByEndpoint.set(endpoint.routePath, groups)
       }
+      let clientSet = groups.get(path)
+      if (!clientSet) {
+        clientSet = new Set<string>()
+        groups.set(path, clientSet)
+      }
+      clientSet.add(clientId)
+      clientPairs.push([endpoint.routePath, path])
+
+      // ── Initial push ─────────────────────────────────────────────────────
+      // Push current state immediately so the client has data without waiting
+      // for the first DB change event (eliminates a separate get() + subscribe()).
+      void this.initialPush(clientId, endpoint)
+    }
+
+    if (clientPairs.length > 0) {
+      this.clientEndpointPaths.set(clientId, clientPairs)
     }
   }
 
@@ -72,7 +219,9 @@ export class ReactiveEngine {
     const sub = this.subscriptions.get(clientId)
     if (!sub) return
     try {
-      const data = await endpoint.handler(sub.ctx)
+      // Prefer initialHandler (e.g. limited snapshot) over the full handler.
+      const fn = endpoint.initialHandler ?? endpoint.handler
+      const data = await fn(sub.ctx)
       // Re-check after awaiting — unsubscribe() may have run while handler was in flight
       if (!this.subscriptions.has(clientId)) return
       sub.pushFn(sub.path, data)
@@ -85,6 +234,16 @@ export class ReactiveEngine {
   unsubscribe(clientId: string): void {
     this.subscriptions.delete(clientId)
 
+    // Remove from subscription reverse index in O(1) using the client's own pointer.
+    const clientPairs = this.clientEndpointPaths.get(clientId)
+    if (clientPairs) {
+      for (const [pattern, path] of clientPairs) {
+        this.subscriptionsByEndpoint.get(pattern)?.get(path)?.delete(clientId)
+      }
+      this.clientEndpointPaths.delete(clientId)
+    }
+
+    // Cancel any pending debounce timers for this client.
     const timerKeys = this.clientTimers.get(clientId)
     if (timerKeys) {
       for (const key of timerKeys) {
@@ -101,46 +260,67 @@ export class ReactiveEngine {
     for (const timer of this.debounceTimers.values()) clearTimeout(timer)
     this.debounceTimers.clear()
     this.clientTimers.clear()
+    // Clear all reverse indexes and state so a reused engine starts clean.
+    this.tableToEndpoints.clear()
+    this.subscriptionsByEndpoint.clear()
+    this.clientEndpointPaths.clear()
+    this.subscriptions.clear()
+    this.endpoints.length = 0
   }
 
   private setupTableWatcher(table: string): void {
     if (this.tableWatchers.has(table)) return
-    this.tableWatchers.set(table, this.adapter.onChange(table, (e) => this.onChangeEvent(e)))
+    // Subscribe to ALL registered adapters — whichever fires for this table will fan out.
+    const unsubs: Array<() => void> = []
+    for (const adapter of this.adapters) {
+      unsubs.push(adapter.onChange(table, (e) => this.onChangeEvent(e)))
+    }
+    this.tableWatchers.set(table, () => unsubs.forEach(fn => fn()))
   }
 
   private onChangeEvent(event: ChangeEvent): void {
-    for (const endpoint of this.endpoints) {
-      if (!normalizeWatch(endpoint.options.watch).includes(event.table)) continue
+    // O(1) reverse-index lookup — only iterate endpoints that watch this table.
+    const endpoints = this.tableToEndpoints.get(event.table)
+    if (!endpoints?.length) return
+
+    for (const endpoint of endpoints) {
+      // O(1) look up the pre-grouped subscriber sets for this endpoint.
+      // subscriptionsByEndpoint[pattern][concretePath] = Set<clientId>
+      // Each inner Set corresponds to one fan-out group (one DB query → N pushes).
+      const groups = this.subscriptionsByEndpoint.get(endpoint.routePath)
+      if (!groups?.size) continue
 
       const debounceMs = endpoint.options.debounce
 
       if (debounceMs !== undefined && debounceMs > 0) {
-        // Per-subscriber debounced push — cannot share a single handler call
-        // because each timer is independent.
-        for (const [clientId, sub] of this.subscriptions) {
-          if (!pathMatchesPattern(sub.path, endpoint.routePath)) continue
-          if (!this.passesFilter(endpoint, event, sub)) continue
-          this.scheduleDebounced(clientId, endpoint, sub, debounceMs)
+        // Per-subscriber debounced push — timers are independent per client.
+        for (const [, clientIds] of groups) {
+          for (const clientId of clientIds) {
+            const sub = this.subscriptions.get(clientId)
+            if (!sub) continue  // removed between index update and now (benign race)
+            if (!this.passesFilter(endpoint, event, sub)) continue
+            this.scheduleDebounced(clientId, endpoint, sub, debounceMs)
+          }
         }
       } else {
-        // ── Fan-out optimisation ──────────────────────────────────────────────
-        // Group all matching subscribers by their concrete subscribed path.
-        // Subscribers on the same path share one handler invocation, so we
-        // call store.list() (or any handler) exactly ONCE per unique path —
-        // not once per connected client.
+        // ── O(matching) fan-out ───────────────────────────────────────────────
+        // Groups are pre-built: iterate only the subscribers on this endpoint.
+        // Each inner Map entry is one concrete path → share one handler call.
         //
-        //   10 clients → /posts/live  →  1 DB query, 10 WS pushes
+        //   Before: O(N_total) regex tests → O(K_matching) filter checks
+        //   After:  O(1) map lookup       → O(K_matching) filter checks
         //
-        const groups = new Map<string, Subscription[]>()
-        for (const [, sub] of this.subscriptions) {
-          if (!pathMatchesPattern(sub.path, endpoint.routePath)) continue
-          if (!this.passesFilter(endpoint, event, sub)) continue
-          const bucket = groups.get(sub.path)
-          if (bucket) bucket.push(sub)
-          else groups.set(sub.path, [sub])
-        }
-        for (const [, subs] of groups) {
-          void this.executeFanOut(endpoint, event, subs)
+        //   Chat app, 50k subscribers, 1k rooms:
+        //   message in room 42 → look up 50 subscribers, not 50,000.
+        for (const [, clientIds] of groups) {
+          const subs: Subscription[] = []
+          for (const clientId of clientIds) {
+            const sub = this.subscriptions.get(clientId)
+            if (!sub) continue  // removed between index update and now (benign race)
+            if (!this.passesFilter(endpoint, event, sub)) continue
+            subs.push(sub)
+          }
+          if (subs.length > 0) void this.executeFanOut(endpoint, event, subs)
         }
       }
     }
@@ -165,11 +345,21 @@ export class ReactiveEngine {
         ? endpoint.deltaFn(event)
         : await endpoint.handler(sub.ctx)
 
-      // Push the same data to all subscribers in this group.
-      for (const s of subs) {
-        if (this.subscriptions.has(s.clientId)) {
-          s.pushFn(s.path, data)
-        }
+      const connected = subs.filter(s => this.subscriptions.has(s.clientId))
+      if (connected.length === 0) return
+
+      // ── WS pre-serialization optimisation ──────────────────────────────────
+      // All subscribers in this group share the same path (that's how they were
+      // grouped), so the WS message is byte-for-byte identical for all of them.
+      // When every subscriber provides a pushSerializedFn, we JSON-stringify
+      // once and hand the pre-built string to each WS socket directly — saving
+      // N−1 serialize calls for N connected clients.
+      const allHaveFastPath = connected.every(s => s.pushSerializedFn)
+      if (allHaveFastPath) {
+        const serialized = JSON.stringify({ type: 'update', path: sub.path, data })
+        for (const s of connected) s.pushSerializedFn!(serialized)
+      } else {
+        for (const s of connected) s.pushFn(s.path, data)
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
@@ -228,54 +418,4 @@ export class ReactiveEngine {
 /** Normalise `watch` to a guaranteed string array. */
 function normalizeWatch(watch: string | string[]): string[] {
   return Array.isArray(watch) ? watch : [watch]
-}
-
-/**
- * Returns true if a concrete path matches a route pattern with named params.
- * Compiled regexes are cached by pattern string.
- *
- * pathMatchesPattern('/orders/123/live', '/orders/:userId/live') → true
- * pathMatchesPattern('/orders/123/live', '/items/:id/live')      → false
- */
-export function pathMatchesPattern(concretePath: string, pattern: string): boolean {
-  let regex = patternRegexCache.get(pattern)
-  if (!regex) {
-    const src = pattern
-      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '([^/]+)')
-    regex = new RegExp(`^${src}$`)
-    patternRegexCache.set(pattern, regex)
-  }
-  return regex.test(concretePath)
-}
-
-// Param-name lists are cached alongside regexes — keyed by pattern string.
-const patternParamNamesCache = new Map<string, string[]>()
-
-/**
- * Extract named path params from a concrete path given a route pattern.
- * Both the compiled regex and the param-name list are cached by pattern.
- *
- * extractParams('/orders/123/live', '/orders/:userId/live') → { userId: '123' }
- */
-export function extractParams(concretePath: string, pattern: string): Record<string, string> {
-  let paramNames = patternParamNamesCache.get(pattern)
-  let regex = patternRegexCache.get(pattern)
-
-  if (!regex || !paramNames) {
-    paramNames = []
-    const src = pattern
-      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, name: string) => {
-        paramNames!.push(name)
-        return '([^/]+)'
-      })
-    regex = new RegExp(`^${src}$`)
-    patternRegexCache.set(pattern, regex)
-    patternParamNamesCache.set(pattern, paramNames)
-  }
-
-  const match = concretePath.match(regex)
-  if (!match) return {}
-  return Object.fromEntries(paramNames.map((name, i) => [name, match[i + 1]!]))
 }

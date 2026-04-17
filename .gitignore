@@ -11,3 +11,8 @@ dist/
 *.tsbuildinfo
 
 coverage/
+.routeflow/
+**/.routeflow/
+:memory:
+:memory:-shm
+:memory:-wal

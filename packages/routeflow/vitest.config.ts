@@ -1,12 +1,18 @@
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      sqlite: 'node:sqlite',
+    },
+  },
   test: {
     environment: 'node',
     server: {
       deps: {
-        // node:sqlite is a Node.js 22.5+ built-in — must not be bundled by Vite.
-        external: ['node:sqlite'],
+        // Keep the built-in SQLite module external. In some Vite/Vitest resolution
+        // paths the `node:` scheme is normalized away, so externalize both forms.
+        external: ['node:sqlite', 'sqlite'],
       },
     },
   },

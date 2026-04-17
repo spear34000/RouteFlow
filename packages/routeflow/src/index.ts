@@ -1,8 +1,11 @@
 import 'reflect-metadata'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { gzip as zlibGzip } from 'node:zlib'
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify'
-import type { AppOptions, Context, FlowOptions, Middleware, OpenAPIOptions, ReactiveEndpoint, TableStore } from './core/types.js'
+import type { AppOptions, Context, FlowOptions, Middleware, OpenAPIOptions, ReactiveEndpoint, TableStore, DatabaseAdapter } from './core/types.js'
+import { ADAPTER_SYMBOL } from './core/types.js'
 import { routeFnStore } from './core/decorator/route.js'
 import { reactiveFnStore } from './core/decorator/reactive.js'
 import { guardFnStore, GUARD_METADATA } from './core/decorator/guard.js'
@@ -10,14 +13,20 @@ import type { RouteMetadata, ReactiveOptions } from './core/types.js'
 import { ReactiveEngine } from './core/reactive/engine.js'
 import { WebSocketTransport } from './core/transport/websocket-transport.js'
 import { SseTransport } from './core/transport/sse-transport.js'
-import { ReactiveApiError, notFound } from './core/errors.js'
+import { ReactiveApiError, badRequest, notFound } from './core/errors.js'
 import { body } from './core/body.js'
 import { ROUTE_METADATA } from './core/decorator/route.js'
 import { REACTIVE_METADATA } from './core/decorator/reactive.js'
+import { RouteStore } from './core/adapter/route-store.js'
+import { PostgresStore } from './adapters/postgres/postgres-store.js'
+import type { PostgresStoreOptions } from './adapters/postgres/postgres-store.js'
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
 export { Route, Get, Post, Put, Patch, Delete } from './core/decorator/route.js'
+// Factory functions
+export { ADAPTER_SYMBOL } from './core/types.js'
+export type { FlowHooks, FlowRelation } from './core/types.js'
 export { Reactive } from './core/decorator/reactive.js'
 export { Guard } from './core/decorator/guard.js'
 export { ReactiveApiError, badRequest, unauthorized, forbidden, notFound } from './core/errors.js'
@@ -72,21 +81,30 @@ export class ReactiveApp {
   private readonly fastify: FastifyInstance
   private readonly engine: ReactiveEngine
   private transport: AnyTransport | null = null
-  private readonly options: Required<AppOptions>
+  private readonly options: Required<Omit<AppOptions, 'adapter' | 'onConnect' | 'onDisconnect' | 'prefix' | 'compress'>> & Pick<AppOptions, 'adapter' | 'onConnect' | 'onDisconnect' | 'prefix' | 'compress'>
+  /** Normalised route prefix — leading slash, no trailing slash. Empty string when not set. */
+  private get prefix(): string {
+    const p = this.options.prefix ?? ''
+    return p === '' ? '' : `/${p.replace(/^\/+|\/+$/g, '')}`
+  }
   /** Collected route patterns for reactive endpoints */
   private readonly reactivePatterns: string[] = []
   /** All registered routes (for .routeflow/info.json) */
   private readonly registeredRoutes: Array<{ method: string; path: string; reactive: boolean }> = []
   /** Global middleware stack — runs before every route handler */
   private readonly middlewares: Middleware[] = []
+  /** Adapters auto-discovered from stores passed to flow() */
+  private readonly discoveredAdapters = new Set<DatabaseAdapter>()
 
   constructor(options: AppOptions) {
     this.options = {
       transport: 'websocket',
       port: 3000,
       cors: true,
-      bodyLimit: 1_048_576, // 1 MiB
+      bodyLimit: 4_194_304, // 4 MiB — accommodate mobile photo uploads (was 1 MiB)
       logger: false,
+      prefix: '',
+      compress: false,
       ...options,
     }
 
@@ -95,7 +113,7 @@ export class ReactiveApp {
       bodyLimit: this.options.bodyLimit,
     })
 
-    this.engine = new ReactiveEngine(this.options.adapter)
+    this.engine = new ReactiveEngine(this.options.adapter ?? null)
 
     // ── CORS ────────────────────────────────────────────────────────────────
     if (this.options.cors !== false) {
@@ -135,6 +153,39 @@ export class ReactiveApp {
         void reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         void reply.header('Access-Control-Max-Age', '86400')
         return reply.status(204).send()
+      })
+    }
+
+    // ── Health check ─────────────────────────────────────────────────────────
+    // Auto-registered at GET /_health so Kubernetes, Consul, and load balancers
+    // can probe liveness without any application-level configuration.
+    this.fastify.get('/_health', async (_req, reply) =>
+      reply.send({
+        status: 'ok',
+        uptime: Math.floor(process.uptime()),
+        timestamp: new Date().toISOString(),
+      }),
+    )
+
+    // ── Gzip compression ─────────────────────────────────────────────────────
+    // Applied when compress:true AND the client sends Accept-Encoding: gzip AND
+    // the response body is > 1 KB.  SSE streams bypass this via reply.raw and
+    // are never passed through onSend, so no explicit skip is needed.
+    if (this.options.compress) {
+      this.fastify.addHook('onSend', async (req, reply, payload) => {
+        if (typeof payload !== 'string' && !Buffer.isBuffer(payload)) return payload
+        const acceptEncoding = (req.headers['accept-encoding'] ?? '') as string
+        if (!acceptEncoding.includes('gzip')) return payload
+        const buf = Buffer.isBuffer(payload) ? payload : Buffer.from(payload)
+        if (buf.length < 1024) return payload
+        reply.header('Content-Encoding', 'gzip')
+        reply.removeHeader('Content-Length')
+        return new Promise<Buffer>((resolve, reject) => {
+          zlibGzip(buf, (err, compressed) => {
+            if (err) reject(err)
+            else resolve(compressed)
+          })
+        })
       })
     }
 
@@ -280,15 +331,18 @@ export class ReactiveApp {
       ) => Promise<unknown>
 
       // Shared Fastify route handler — reused for the main route and the auto-live companion.
-      const fastifyHandler = async (req: { params: unknown; query: unknown; body: unknown; headers: unknown }, reply: { send: (v: unknown) => unknown }) => {
+      const fastifyHandler = async (req: { params: unknown; query: unknown; body: unknown; headers: Record<string, unknown>; id?: unknown }, reply: { send: (v: unknown) => unknown; header: (k: string, v: string) => void }) => {
+        const requestId = (req.headers['x-request-id'] as string | undefined) ?? randomUUID()
+        reply.header('X-Request-ID', requestId)
         const ctx: Context = {
           params: req.params as Record<string, string>,
           query: req.query as Record<string, string>,
           body: req.body,
           headers: req.headers as Record<string, string>,
+          requestId,
         }
         try {
-          await runChain([...this.middlewares, ...routeGuards], ctx)
+          await runChain(routeGuards.length ? [...this.middlewares, ...routeGuards] : this.middlewares, ctx)
           const result = await handler.call(instance, ctx)
           return reply.send(result)
         } catch (err) {
@@ -302,15 +356,18 @@ export class ReactiveApp {
         }
       }
 
+      // Apply the global route prefix (e.g. '/v1') to all registered paths.
+      const prefixedPath = `${this.prefix}${routeMeta.path}`
+
       // Register HTTP route with Fastify
       this.fastify.route({
         method: routeMeta.method,
-        url: routeMeta.path,
+        url: prefixedPath,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         handler: fastifyHandler as any,
       })
 
-      this.registeredRoutes.push({ method: routeMeta.method, path: routeMeta.path, reactive: !!reactiveMeta })
+      this.registeredRoutes.push({ method: routeMeta.method, path: prefixedPath, reactive: !!reactiveMeta })
 
       // Register reactive endpoint if @Reactive is present.
       //
@@ -323,8 +380,8 @@ export class ReactiveApp {
       //   → Live  at GET /items/live  (auto-registered, same handler)
       //   → WS/SSE subscribers connect to /items/live
       if (reactiveMeta) {
-        const isAlreadyLive = routeMeta.path.endsWith('/live')
-        const livePath = isAlreadyLive ? routeMeta.path : `${routeMeta.path}/live`
+        const isAlreadyLive = prefixedPath.endsWith('/live')
+        const livePath = isAlreadyLive ? prefixedPath : `${prefixedPath}/live`
 
         const endpoint: ReactiveEndpoint = {
           routePath: livePath,
@@ -389,29 +446,171 @@ export class ReactiveApp {
     store: TableStore<T>,
     options: FlowOptions = {},
   ): this {
-    const tableName  = options.watch
-      ?? basePath.replace(/^\//, '').split('/')[0]
+    // Derive the table name from the original (unprefixed) base path so that
+    // the watch key matches the adapter's table name regardless of prefix.
+    const tableName     = options.watch
+      ?? basePath.replace(/^\//, '').split('/').filter(s => !s.startsWith(':')).at(-1)
       ?? 'unknown'
-    const livePath   = `${basePath}/live`
-    const guards     = options.guards ?? []
-    const pushMode   = options.push   ?? 'snapshot'
-    const only       = new Set(
+    // Apply the global prefix to all routes registered by this flow.
+    basePath            = `${this.prefix}${basePath}`
+    const livePath      = `${basePath}/live`
+    const guards        = options.guards        ?? []
+    const pushMode      = options.push          ?? 'snapshot'
+    const queryFilter   = options.queryFilter
+    const createMerge   = options.createMerge   ?? queryFilter
+    const initialLimit  = options.initialLimit
+    const queryMode     = options.query         ?? false
+    const flowFilter    = options.filter
+    const validate      = options.validate
+    const hooks         = options.hooks
+    const protect       = options.protect
+    const relations     = options.relations
+    const only          = new Set(
       options.only ?? ['list', 'get', 'create', 'update', 'delete', 'live'],
     )
+
+    // ── Auto-discover adapter from store ──────────────────────────────────────
+    const storeAdapter = (store as unknown as Record<symbol, unknown>)[ADAPTER_SYMBOL] as DatabaseAdapter | undefined
+    if (storeAdapter) {
+      this.discoveredAdapters.add(storeAdapter)
+      this.engine.registerAdapter(storeAdapter)
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Build store.list() options from the request context.
+     * - queryFilter derives the WHERE clause from path params
+     * - query:'auto' maps ?limit / ?offset / ?after / ?orderBy / ?order from query string
+     */
+    const buildListOpts = (ctx: Context) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const opts: Record<string, any> = {}
+      if (queryFilter) opts['where'] = queryFilter(ctx)
+      if (queryMode === 'auto') {
+        const q = ctx.query
+        if (q['limit']   != null) opts['limit']   = Math.min(Number(q['limit']),  10_000)
+        if (q['offset']  != null) opts['offset']  = Number(q['offset'])
+        if (q['after']   != null) opts['after']   = Number(q['after'])
+        if (q['orderBy'] != null) opts['orderBy'] = q['orderBy']
+        if (q['order']   != null) opts['order']   = q['order']
+      }
+      return opts
+    }
+
+    /** Strip protected fields from any response object or array. */
+    const applyProtect = (data: unknown): unknown => {
+      if (!protect?.length) return data
+      if (Array.isArray(data)) return data.map(applyProtect)
+      if (data && typeof data === 'object') {
+        const out = { ...data as Record<string, unknown> }
+        for (const f of protect) delete out[f]
+        return out
+      }
+      return data
+    }
+
+    /** Resolve ?include=<name> relations on a row or array of rows.
+     *
+     * For lists: batches FK values per relation (dedup → parallel fetch → in-memory join)
+     * so N rows × K relations = K parallel queries instead of N×K sequential queries.
+     */
+    const applyRelations = async (data: unknown, ctx: Context): Promise<unknown> => {
+      if (!relations) return data
+      const includes = (ctx.query['include'] as string | undefined)?.split(',').map(s => s.trim()).filter(Boolean) ?? []
+      if (!includes.length) return data
+
+      // ── List: batch-load each relation ────────────────────────────────────
+      if (Array.isArray(data) && data.length > 0) {
+        const rows = data as Record<string, unknown>[]
+
+        // For each included relation, collect unique FK IDs, then fetch all in parallel.
+        const relMaps = new Map<string, Map<number, unknown>>()
+        await Promise.all(
+          includes.map(async (name) => {
+            const rel = relations[name]
+            if (!rel) return
+            // Deduplicate FK values across all rows
+            const fkSet = new Set<number>()
+            for (const row of rows) {
+              const fk = row[rel.foreignKey]
+              if (fk != null) fkSet.add(Number(fk))
+            }
+            if (!fkSet.size) return
+            const fkArr = [...fkSet]
+            // Prefer getMany() (single IN-clause query) when the store supports it;
+            // fall back to parallel get() calls for custom stores that don't implement it.
+            const fetched = rel.store.getMany
+              ? await rel.store.getMany(fkArr)
+              : await Promise.all(fkArr.map((id) => rel.store.get(id)))
+            relMaps.set(name, new Map(fkArr.map((id, i) => [id, fetched[i]])))
+          }),
+        )
+
+        return rows.map((row) => {
+          const out = { ...row }
+          for (const name of includes) {
+            const rel = relations[name]
+            if (!rel) continue
+            const relMap = relMaps.get(name)
+            const fkVal = row[rel.foreignKey]
+            if (relMap && fkVal != null) out[name] = relMap.get(Number(fkVal)) ?? null
+          }
+          return out
+        })
+      }
+
+      // ── Single row: parallel-fetch all includes ───────────────────────────
+      if (data && typeof data === 'object') {
+        const row = data as Record<string, unknown>
+        const out = { ...row }
+        await Promise.all(
+          includes.map(async (name) => {
+            const rel = relations[name]
+            if (!rel) return
+            const fkVal = row[rel.foreignKey]
+            if (fkVal != null) out[name] = await rel.store.get(Number(fkVal))
+          }),
+        )
+        return out
+      }
+
+      return data
+    }
+
+    /** Run field-level validation on write body. Throws 400 on failure. */
+    const runValidate = (bodyData: Record<string, unknown>): void => {
+      if (!validate) return
+      const errors: string[] = []
+      for (const [field, fn] of Object.entries(validate)) {
+        const result = fn(bodyData[field], bodyData)
+        if (result !== true && result !== false) errors.push(String(result))
+        else if (result === false) errors.push(`${field} is invalid`)
+      }
+      if (errors.length) throw badRequest(errors.join('; '))
+    }
 
     // Shared handler wrapper: runs middleware chain then the given operation.
     const exec = (
       op: (ctx: Context) => Promise<unknown>,
     ) => async (req: FastifyRequest, reply: FastifyReply) => {
+      // Use the X-Request-ID header when present (forwarded by API gateway / load
+      // balancer) so the ID spans the full request chain; otherwise generate one.
+      const requestId = (req.headers['x-request-id'] as string | undefined) ?? randomUUID()
+      reply.header('X-Request-ID', requestId)
       const ctx: Context = {
-        params:  req.params  as Record<string, string>,
-        query:   req.query   as Record<string, string>,
-        body:    req.body,
-        headers: req.headers as Record<string, string>,
+        params:    req.params  as Record<string, string>,
+        query:     req.query   as Record<string, string>,
+        body:      req.body,
+        headers:   req.headers as Record<string, string>,
+        requestId,
       }
       try {
-        await runChain([...this.middlewares, ...guards], ctx)
-        return reply.send(await op(ctx))
+        await runChain(guards.length ? [...this.middlewares, ...guards] : this.middlewares, ctx)
+        let result = await op(ctx)
+        result = await applyRelations(result, ctx)
+        result = applyProtect(result)
+        return reply.send(result)
       } catch (err) {
         if (err instanceof ReactiveApiError) throw err
         const msg = isProd
@@ -421,8 +620,11 @@ export class ReactiveApp {
       }
     }
 
+    // ── Routes ────────────────────────────────────────────────────────────────
+
     if (only.has('list')) {
-      this.fastify.get(basePath, exec(() => store.list()))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this.fastify.get(basePath, exec((ctx) => store.list(buildListOpts(ctx) as any)))
       this.registeredRoutes.push({ method: 'GET', path: basePath, reactive: false })
     }
 
@@ -436,10 +638,22 @@ export class ReactiveApp {
     }
 
     if (only.has('create')) {
-      this.fastify.post(basePath, exec((ctx) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        store.create(body(ctx) as any),
-      ))
+      this.fastify.post(basePath, exec(async (ctx) => {
+        // Merge path params (from queryFilter / createMerge) into the body
+        // so that e.g. POST /rooms/42/messages automatically stamps roomId:42.
+        let merged = createMerge
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ? { ...body(ctx), ...createMerge(ctx) } as any
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          : body(ctx) as any
+
+        runValidate(merged)
+
+        if (hooks?.beforeCreate) merged = await hooks.beforeCreate(merged, ctx)
+        const created = await store.create(merged)
+        if (hooks?.afterCreate) await hooks.afterCreate(created, ctx)
+        return created
+      }))
       this.registeredRoutes.push({ method: 'POST', path: basePath, reactive: false })
     }
 
@@ -448,8 +662,15 @@ export class ReactiveApp {
       // use whichever HTTP verb fits their convention.
       const updateHandler = exec(async (ctx) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const updated = await store.update(Number(ctx.params['id']), body(ctx) as any)
+        let data = body(ctx) as any
+
+        runValidate(data)
+
+        if (hooks?.beforeUpdate) data = await hooks.beforeUpdate(data, ctx)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const updated = await store.update(Number(ctx.params['id']), data as any)
         if (!updated) throw notFound(`${ctx.params['id']} not found`)
+        if (hooks?.afterUpdate) await hooks.afterUpdate(updated, ctx)
         return updated
       })
       this.fastify.put  (`${basePath}/:id`, updateHandler)
@@ -459,9 +680,13 @@ export class ReactiveApp {
     }
 
     if (only.has('delete')) {
-      this.fastify.delete(`${basePath}/:id`, exec(async (ctx) => ({
-        ok: await store.delete(Number(ctx.params['id'])),
-      })))
+      this.fastify.delete(`${basePath}/:id`, exec(async (ctx) => {
+        const id = Number(ctx.params['id'])
+        if (hooks?.beforeDelete) await hooks.beforeDelete(id, ctx)
+        const ok = await store.delete(id)
+        if (ok && hooks?.afterDelete) await hooks.afterDelete(id, ctx)
+        return { ok }
+      }))
       this.registeredRoutes.push({ method: 'DELETE', path: `${basePath}/:id`, reactive: false })
     }
 
@@ -481,14 +706,46 @@ export class ReactiveApp {
           })
         : undefined
 
+      // ── Reactive filter ───────────────────────────────────────────────────
+      // When queryFilter is provided, derive a reactive filter automatically:
+      // only push to subscribers whose filter matches the changed row.
+      // This ensures that /rooms/42/messages/live only receives messages
+      // where roomId === 42, not messages from all rooms.
+      const derivedFilter = flowFilter
+        ?? (queryFilter
+          ? (event: import('./core/types.js').ChangeEvent, ctx: Context) => {
+              const where = queryFilter(ctx)
+              const row = (event.newRow ?? event.oldRow) as Record<string, unknown> | null
+              if (!row) return true
+              return Object.entries(where).every(([k, v]) => row[k] === v)
+            }
+          : undefined)
+
+      // ── Snapshot handler (full list, respects queryFilter) ─────────────────
+      const snapshotHandler = (ctx: Context) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        store.list(queryFilter ? ({ where: queryFilter(ctx) } as any) : {})
+
+      // ── Initial push handler (limited snapshot for large tables) ───────────
+      const initialHandler = initialLimit != null
+        ? (ctx: Context) =>
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            store.list(queryFilter
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              ? ({ where: queryFilter(ctx), limit: initialLimit, order: 'desc' } as any)
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              : ({ limit: initialLimit, order: 'desc' } as any))
+        : undefined
+
       this.engine.registerEndpoint({
         routePath: livePath,
-        options:   { watch: tableName },
-        handler:   () => store.list(),
+        options:   { watch: tableName, filter: derivedFilter },
+        handler:   snapshotHandler,
         deltaFn,
+        initialHandler,
       })
       this.reactivePatterns.push(livePath)
-      this.fastify.get(livePath, exec(() => store.list()))
+      this.fastify.get(livePath, exec((ctx) => snapshotHandler(ctx)))
       this.registeredRoutes.push({ method: 'GET', path: livePath, reactive: true })
     }
 
@@ -635,10 +892,20 @@ export class ReactiveApp {
   async listen(port?: number): Promise<void> {
     const listenPort = port ?? this.options.port
 
-    await this.options.adapter.connect()
+    // Connect all adapters (explicit one takes priority; otherwise auto-discovered).
+    const adapters = this.options.adapter
+      ? [this.options.adapter]
+      : [...this.discoveredAdapters]
+    await Promise.all(adapters.map((a) => a.connect()))
 
     if (this.options.transport === 'websocket') {
-      this.transport = new WebSocketTransport(this.engine, this.reactivePatterns, this.options.cors)
+      this.transport = new WebSocketTransport(
+        this.engine,
+        this.reactivePatterns,
+        this.options.cors,
+        this.options.onConnect,
+        this.options.onDisconnect,
+      )
     } else if (this.options.transport === 'sse') {
       const sseTransport = new SseTransport(this.engine, this.reactivePatterns)
       sseTransport.register(this.fastify)
@@ -656,6 +923,33 @@ export class ReactiveApp {
       `[RouteFlow] Listening on port ${listenPort} (transport: ${this.options.transport})`,
     )
 
+    // ── Graceful shutdown ────────────────────────────────────────────────────
+    // Register SIGTERM and SIGINT handlers so container orchestrators (Kubernetes,
+    // Docker, Fly.io, …) can drain connections cleanly before killing the process.
+    // Without this, in-flight requests are cut mid-response and DB connections
+    // are leaked.  We give 10 s for in-flight work to complete, then force-exit.
+    const shutdown = async (signal: string): Promise<void> => {
+      console.log(`[RouteFlow] ${signal} received — gracefully shutting down…`)
+      const timeout = setTimeout(() => {
+        console.error('[RouteFlow] Graceful shutdown timed out — forcing exit.')
+        process.exit(1)
+      }, 10_000)
+      timeout.unref()  // don't prevent the process from exiting on its own
+      try {
+        await this.close()
+        clearTimeout(timeout)
+        process.exit(0)
+      } catch (err) {
+        console.error('[RouteFlow] Shutdown error:', err instanceof Error ? err.message : String(err))
+        clearTimeout(timeout)
+        process.exit(1)
+      }
+    }
+
+    // Register once — guard against duplicate listen() calls in tests.
+    if (!process.listenerCount('SIGTERM')) process.once('SIGTERM', () => void shutdown('SIGTERM'))
+    if (!process.listenerCount('SIGINT'))  process.once('SIGINT',  () => void shutdown('SIGINT'))
+
     this.writeInfo(listenPort)
   }
 
@@ -669,7 +963,9 @@ export class ReactiveApp {
           {
             port,
             transport: this.options.transport,
-            adapter: this.options.adapter.constructor.name,
+            adapter: this.options.adapter?.constructor.name
+              ?? [...this.discoveredAdapters].map(a => a.constructor.name).join(',')
+              ?? 'unknown',
             routes: this.registeredRoutes,
             startedAt: new Date().toISOString(),
           },
@@ -689,13 +985,16 @@ export class ReactiveApp {
     this.engine.destroy()
     if (this.transport) await this.transport.close()
     await this.fastify.close()
-    await this.options.adapter.disconnect()
+    const adapters = this.options.adapter
+      ? [this.options.adapter]
+      : [...this.discoveredAdapters]
+    await Promise.all(adapters.map((a) => a.disconnect()))
   }
 }
 
 // ── Middleware chain runner ─────────────────────────────────────────────────
 
-async function runChain(middlewares: Middleware[], ctx: Context): Promise<void> {
+async function runChain(middlewares: readonly Middleware[], ctx: Context): Promise<void> {
   let i = 0
   const next = async (): Promise<void> => {
     if (i >= middlewares.length) return
@@ -744,6 +1043,45 @@ function buildSwaggerUI(specUrl: string, title: string): string {
   </script>
 </body>
 </html>`
+}
+
+// ── DB factory functions ────────────────────────────────────────────────────
+
+/**
+ * Create a SQLite-backed store. Short-hand for `new RouteStore(path)`.
+ *
+ * @example
+ * ```ts
+ * import { sqlite, createApp } from 'routeflow-api'
+ *
+ * const db = sqlite('./data.db')
+ * const tasks = db.table('tasks', { title: 'text', done: 'integer' })
+ *
+ * createApp({ port: 3000 }).flow('/tasks', tasks).listen()
+ * ```
+ */
+export function sqlite(path: string): RouteStore {
+  return new RouteStore(path)
+}
+
+/**
+ * Create a PostgreSQL-backed store. Short-hand for `new PostgresStore({ connectionString })`.
+ *
+ * @example
+ * ```ts
+ * import { postgres, createApp } from 'routeflow-api'
+ *
+ * const pg = postgres(process.env.DATABASE_URL!)
+ * const users = pg.table('users', { username: 'text', email: 'text' })
+ *
+ * createApp({ port: 3000 }).flow('/users', users).listen()
+ * ```
+ */
+export function postgres(
+  connectionString: string,
+  options?: Omit<PostgresStoreOptions, 'connectionString'>,
+): PostgresStore {
+  return new PostgresStore({ connectionString, ...options })
 }
 
 // ── createApp factory ───────────────────────────────────────────────────────

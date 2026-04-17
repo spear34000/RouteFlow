@@ -21,6 +21,12 @@ npm install routeflow-api
 
 > `reflect-metadata`는 `routeflow-api` 안에 포함되어 있으므로 별도 설치 불필요합니다.
 
+Node.js 버전 참고:
+
+- 코어 기능은 현재 Node.js LTS 라인에서 사용 가능합니다.
+- SQLite `RouteStore`는 `node:sqlite`를 쓰므로 Node.js `22.13+`가 필요합니다.
+- 2026-04-17 기준 최신 LTS는 `Node.js 24.15.0 (LTS)`이며, SQLite 예제는 이 버전을 권장합니다.
+
 ---
 
 ## 2. 서버 만들기
@@ -59,7 +65,7 @@ adapter.emit('items', { operation: 'INSERT', newRow: { id: 2, name: 'Orange' }, 
 ### 파일 저장 (SQLite, 데이터 유지)
 
 서버 재시작 후에도 데이터를 유지하려면 `RouteStore`를 씁니다.
-Node.js 22.5+ 내장 `node:sqlite`를 사용하므로 추가 패키지 설치가 없습니다.
+Node.js 22.13+ 내장 `node:sqlite`를 사용하므로 추가 패키지 설치가 없습니다.
 
 ```ts
 import { createApp } from 'routeflow-api'
@@ -97,6 +103,12 @@ class ItemController {
 const app = createApp({ adapter: db, port: 3000 })  // db가 어댑터 역할도 함
 app.register(ItemController)
 await app.listen()
+```
+
+CommonJS 프로젝트에서도 사용할 수 있습니다.
+
+```js
+const { RouteStore } = require('routeflow-api/sqlite')
 ```
 
 ---
@@ -140,6 +152,16 @@ createClient('http://localhost:3000', { transport: 'sse' })
 ```
 
 `subscribe()` 호출 방식은 그대로 유지됩니다.
+
+## 4-1. 기본 운영 기능
+
+RouteFlow는 앱 시작 시 다음 기능을 자동으로 제공합니다.
+
+- `GET /_health`
+- 요청별 `X-Request-ID` 생성 또는 전달
+- `SIGTERM`, `SIGINT` graceful shutdown
+
+운영용 상세 설명은 [`server.md`](./server.md), 릴리스 변경점은 [`releases/v1.0.22.md`](./releases/v1.0.22.md)를 참고하세요.
 
 ---
 

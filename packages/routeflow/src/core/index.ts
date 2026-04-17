@@ -43,7 +43,7 @@ export class ReactiveApp {
   private readonly fastify: FastifyInstance
   private readonly engine: ReactiveEngine
   private transport: AnyTransport | null = null
-  private readonly options: Required<AppOptions>
+  private readonly options: Required<Omit<AppOptions, 'adapter' | 'onConnect' | 'onDisconnect' | 'prefix' | 'compress'>> & Pick<AppOptions, 'adapter' | 'onConnect' | 'onDisconnect' | 'prefix' | 'compress'>
   /** Collected route patterns for reactive endpoints */
   private readonly reactivePatterns: string[] = []
 
@@ -52,12 +52,12 @@ export class ReactiveApp {
       transport: 'websocket',
       port: 3000,
       cors: true,
-      bodyLimit: 1_048_576,
+      bodyLimit: 4_194_304,
       logger: false,
       ...options,
     }
     this.fastify = Fastify({ logger: false })
-    this.engine = new ReactiveEngine(this.options.adapter)
+    this.engine = new ReactiveEngine(this.options.adapter ?? null)
 
     // Register a global error handler that serialises ReactiveApiError properly
     this.fastify.setErrorHandler((error, _req, reply) => {
@@ -159,7 +159,7 @@ export class ReactiveApp {
   async listen(port?: number): Promise<void> {
     const listenPort = port ?? this.options.port
 
-    await this.options.adapter.connect()
+    if (this.options.adapter) await this.options.adapter.connect()
 
     if (this.options.transport === 'websocket') {
       this.transport = new WebSocketTransport(this.engine, this.reactivePatterns)
@@ -188,7 +188,7 @@ export class ReactiveApp {
     this.engine.destroy()
     if (this.transport) await this.transport.close()
     await this.fastify.close()
-    await this.options.adapter.disconnect()
+    if (this.options.adapter) await this.options.adapter.disconnect()
   }
 }
 

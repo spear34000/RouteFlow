@@ -442,3 +442,102 @@ describe('createFastAPIClient', () => {
     }
   })
 })
+
+// ── getMany() — applyRelations batch loading ───────────────────────────────────
+
+describe('flow() ?include= with getMany()', () => {
+  interface User   { id: number; username: string }
+  interface Post   { id: number; userId: number; title: string }
+
+  function makeGetManyStore<T extends { id: number }>(rows: T[]): TableStore<T> {
+    return {
+      list:    async () => [...rows],
+      get:     async (id) => rows.find((r) => r.id === id) ?? null,
+      // getMany: single IN-clause call, returns result in input order
+      getMany: async (ids) => ids.map((id) => rows.find((r) => r.id === id) ?? null),
+      create:  async () => { throw new Error('not needed') },
+      update:  async () => { throw new Error('not needed') },
+      delete:  async () => false,
+    }
+  }
+
+  it('resolves ?include= relation using getMany() in a single batch', async () => {
+    const users: User[] = [
+      { id: 1, username: 'alice' },
+      { id: 2, username: 'bob' },
+    ]
+    const posts: Post[] = [
+      { id: 10, userId: 1, title: 'Post A' },
+      { id: 11, userId: 2, title: 'Post B' },
+      { id: 12, userId: 1, title: 'Post C' },
+    ]
+
+    const userStore = makeGetManyStore(users)
+    const postStore = makeGetManyStore(posts)
+
+    // Spy to verify getMany is called instead of multiple get() calls
+    const getManyspy = vi.spyOn(userStore, 'getMany')
+    const getSpy     = vi.spyOn(userStore, 'get')
+
+    const { app, baseUrl } = await startApp((a) =>
+      a.flow('/posts', postStore, {
+        relations: { user: { store: userStore, foreignKey: 'userId' } },
+      }),
+    )
+
+    try {
+      const res = await fetch(`${baseUrl}/posts?include=user`)
+      const body = await res.json() as Array<Post & { user: User | null }>
+
+      expect(res.status).toBe(200)
+      expect(body).toHaveLength(3)
+      expect(body[0]!.user).toEqual({ id: 1, username: 'alice' })
+      expect(body[1]!.user).toEqual({ id: 2, username: 'bob' })
+      expect(body[2]!.user).toEqual({ id: 1, username: 'alice' })
+
+      // getMany called once (not once per post); get() never called
+      expect(getManyspy).toHaveBeenCalledOnce()
+      expect(getManyspy).toHaveBeenCalledWith(expect.arrayContaining([1, 2]))
+      expect(getSpy).not.toHaveBeenCalled()
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('falls back to parallel get() when store does not implement getMany()', async () => {
+    const users: User[] = [{ id: 1, username: 'alice' }]
+    const posts: Post[] = [
+      { id: 10, userId: 1, title: 'Post A' },
+      { id: 11, userId: 1, title: 'Post B' },
+    ]
+
+    // Store WITHOUT getMany
+    const userStore: TableStore<User> = {
+      list:   async () => [...users],
+      get:    async (id) => users.find((r) => r.id === id) ?? null,
+      create: async () => { throw new Error('not needed') },
+      update: async () => null,
+      delete: async () => false,
+    }
+    const getSpy = vi.spyOn(userStore, 'get')
+    const postStore = makeGetManyStore(posts)
+
+    const { app, baseUrl } = await startApp((a) =>
+      a.flow('/posts', postStore, {
+        relations: { user: { store: userStore, foreignKey: 'userId' } },
+      }),
+    )
+
+    try {
+      const res = await fetch(`${baseUrl}/posts?include=user`)
+      const body = await res.json() as Array<Post & { user: User | null }>
+
+      expect(res.status).toBe(200)
+      expect(body[0]!.user).toEqual({ id: 1, username: 'alice' })
+      // get() called for each unique FK (fallback path)
+      expect(getSpy).toHaveBeenCalled()
+    } finally {
+      await app.close()
+    }
+  })
+})

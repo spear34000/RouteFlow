@@ -1,2 +1,5 @@
 export { RedisAdapter } from './redis/redis-adapter.js'
-export type { RedisAdapterOptions } from './redis/types.js'
+export { RedisPublisher } from './redis/redis-publisher.js'
+export { createRedisAdapter } from './redis/redis-setup.js'
+export type { RedisAdapterOptions, RedisPublisherOptions, RedisChangePayload, RedisSubscriber, RedisPublisherClient } from './redis/types.js'
+export type { CreateRedisAdapterOptions, CreateRedisAdapterResult } from './redis/redis-setup.js'

@@ -35,6 +35,12 @@ DB 변경 → Adapter 감지 → 서버 → 구독자 브로드캐스트 → 클
 npm install routeflow-api
 ```
 
+Node.js 버전 참고:
+
+- SQLite `RouteStore`는 Node.js `22.13+`가 필요합니다.
+- 2026-04-17 기준 최신 LTS는 `Node.js 24.15.0 (LTS)`입니다.
+- `routeflow-api/sqlite`는 ESM과 CommonJS에서 모두 사용할 수 있습니다.
+
 DB 어댑터가 필요하면 해당 드라이버만 추가합니다.
 
 ```bash
@@ -66,6 +72,7 @@ npm install routeflow-api ioredis   # Redis
 
 로컬 개발이나 단일 서버 운영에 권장합니다.  
 `RouteStore`가 `DatabaseAdapter`와 테이블 CRUD를 하나로 통합합니다.
+v1.0.22부터는 테이블별 64개 LRU statement cache를 유지합니다.
 
 ```ts
 import { createApp, Reactive, Route } from 'routeflow-api'
@@ -117,6 +124,10 @@ class ItemController {
 const app = createApp({ adapter: db, port: 3000 })
 app.register(ItemController)
 await app.listen()
+```
+
+```js
+const { RouteStore } = require('routeflow-api/sqlite')
 ```
 
 ### 패턴 2 — 팩토리 + TableStore\<T\> (백엔드 교체 가능)
@@ -249,6 +260,12 @@ const app = createApp({ adapter, transport: 'sse', port: 3000 })
 const fastify = app.getFastify()
 fastify.get('/health', async () => ({ status: 'ok' }))
 ```
+
+기본 제공 운영 엔드포인트도 있습니다.
+
+- `GET /_health`
+- `X-Request-ID` 자동 생성/전달
+- `SIGTERM`, `SIGINT` graceful shutdown
 
 ### PollingAdapter (공식 어댑터 없는 DB)
 

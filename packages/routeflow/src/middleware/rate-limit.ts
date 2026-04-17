@@ -33,6 +33,14 @@ interface Bucket {
 }
 
 /**
+ * Maximum number of unique client keys tracked simultaneously.
+ * When the cap is hit, the oldest entry is evicted before inserting a new one
+ * (Maps preserve insertion order, so this is a simple O(1) LRU approximation).
+ * Prevents unbounded memory growth under a flood of unique source IPs.
+ */
+const MAX_BUCKETS = 100_000
+
+/**
  * In-memory sliding-window rate limiter middleware factory.
  *
  * Uses a fixed-window strategy: each unique client key gets a counter that
@@ -90,6 +98,11 @@ export function rateLimit(options: RateLimitOptions = {}): Middleware {
     let bucket = buckets.get(key)
 
     if (!bucket || bucket.resetAt <= now) {
+      // Evict oldest bucket when at capacity (LRU approximation via Map insertion order).
+      if (!bucket && buckets.size >= MAX_BUCKETS) {
+        const oldest = buckets.keys().next().value
+        if (oldest !== undefined) buckets.delete(oldest)
+      }
       // Start a fresh window
       bucket = { count: 0, resetAt: now + windowMs }
       buckets.set(key, bucket)

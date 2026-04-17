@@ -11,11 +11,21 @@ import { ReactiveApiError } from '../errors.js'
  * Clients connect via a GET request to `/_sse/subscribe?path=<encodedPath>`.
  * The server sends a stream of `data:` events in the standard SSE format.
  *
- * Event format (one JSON object per `data:` line):
+ * Event format:
  * ```
+ * id: 42
  * data: {"type":"update","path":"/orders/123/live","data":[...]}
  *
  * ```
+ *
+ * Each event includes an incrementing `id:` line so the browser's native
+ * `EventSource` can send `Last-Event-ID` on reconnect.  Because the server
+ * always pushes a full snapshot (or delta) on re-subscribe, the `Last-Event-ID`
+ * value is informational — no replay is needed, but the header confirms the
+ * client had received events up to that point.
+ *
+ * A `retry: 3000` directive is sent on connection to hint the browser to
+ * reconnect within 3 seconds after an unexpected disconnect.
  *
  * Unlike WebSocket, SSE is strictly server-to-client (unidirectional).
  * The subscribed path is passed as a query param on the initial GET request.
@@ -28,6 +38,8 @@ import { ReactiveApiError } from '../errors.js'
 export class SseTransport {
   /** clientId → reply (kept open) */
   private readonly connections: Map<string, FastifyReply> = new Map()
+  /** Per-client monotonically increasing event sequence number */
+  private readonly sequences: Map<string, number> = new Map()
 
   constructor(
     private readonly engine: ReactiveEngine,
@@ -99,15 +111,30 @@ export class SseTransport {
         'X-Accel-Buffering': 'no', // disable nginx buffering
       })
 
-      // Send initial comment to establish connection
+      // Tell the browser's EventSource to reconnect within 3 s after a drop.
+      // The initial snapshot on re-subscribe already recovers state, so no
+      // replay buffer is needed — but the retry hint avoids the default 3 s
+      // browser reconnect delay being opaque/undocumented.
+      reply.raw.write('retry: 3000\n')
+
+      // Send initial comment to establish the connection (also flushes headers).
       reply.raw.write(': connected\n\n')
 
       this.connections.set(clientId, reply)
+      this.sequences.set(clientId, 0)
+
+      // Log the Last-Event-ID the client reported so future logic can use it
+      // for selective replay if needed. Currently unused — the snapshot on
+      // (re-)subscribe is always a full consistent state.
+      // const lastEventId = (req.headers['last-event-id'] as string | undefined) ?? null
 
       const pushFn = (subscribedPath: string, data: unknown): void => {
         if (reply.raw.destroyed) return
+        const seq = (this.sequences.get(clientId) ?? 0) + 1
+        this.sequences.set(clientId, seq)
         const payload = JSON.stringify({ type: 'update', path: subscribedPath, data })
-        reply.raw.write(`data: ${payload}\n\n`)
+        // id: allows EventSource to send Last-Event-ID on reconnect
+        reply.raw.write(`id: ${seq}\ndata: ${payload}\n\n`)
       }
 
       this.engine.subscribe(clientId, decodedPath, ctx, pushFn)
@@ -116,6 +143,7 @@ export class SseTransport {
       req.raw.on('close', () => {
         this.engine.unsubscribe(clientId)
         this.connections.delete(clientId)
+        this.sequences.delete(clientId)
         if (!reply.raw.destroyed) reply.raw.end()
       })
 
@@ -133,6 +161,7 @@ export class SseTransport {
       if (!reply.raw.destroyed) reply.raw.end()
     }
     this.connections.clear()
+    this.sequences.clear()
   }
 
 }

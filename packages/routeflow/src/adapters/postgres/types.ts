@@ -19,6 +19,25 @@ export interface PostgresAdapterOptions {
    * Defaults to 'reactive_api'.
    */
   triggerPrefix?: string
+
+  /**
+   * Called on connection errors, trigger installation failures, and listener errors.
+   * When omitted, errors are logged to `console.error`.
+   */
+  onError?: (error: Error) => void
+
+  /**
+   * Maximum number of automatic reconnect attempts after an unexpected disconnect.
+   * Set to `0` to disable auto-reconnect.
+   * Default: 10.
+   */
+  maxReconnectAttempts?: number
+
+  /**
+   * Initial reconnect backoff in milliseconds. Doubles on each failure (capped at 30 s).
+   * Default: 500.
+   */
+  reconnectDelayMs?: number
 }
 
 /**
@@ -30,4 +49,8 @@ export interface NotifyPayload {
   operation: 'INSERT' | 'UPDATE' | 'DELETE'
   new_row: Record<string, unknown> | null
   old_row: Record<string, unknown> | null
+  /** Server-side timestamp (ms since epoch) from clock_timestamp(). */
+  event_time?: number
+  /** True when the payload exceeded 7900 bytes and row data was omitted. */
+  _truncated?: boolean
 }

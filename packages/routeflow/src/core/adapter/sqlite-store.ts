@@ -1,6 +1,20 @@
-import { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve, isAbsolute } from 'node:path'
+
+function getDatabaseSync(): typeof DatabaseSyncType {
+  const sqlite = globalThis.process?.getBuiltinModule?.('node:sqlite') as
+    | { DatabaseSync?: typeof DatabaseSyncType }
+    | undefined
+
+  if (!sqlite?.DatabaseSync) {
+    throw new Error(
+      '[RouteFlow] SQLite support requires Node.js 22.13+ and the built-in `node:sqlite` module.',
+    )
+  }
+
+  return sqlite.DatabaseSync
+}
 
 /**
  * A generic record type for SQLite rows.
@@ -10,7 +24,7 @@ export type SqliteRow = Record<string, string | number | null>
 
 /**
  * File-based key-value store backed by Node's built-in `node:sqlite`.
- * Requires Node.js 22.5+.
+ * Requires Node.js 22.13+.
  *
  * Data survives server restarts because it is written to a file on disk.
  * The path can be set directly in code — no environment variable required.
@@ -24,7 +38,7 @@ export type SqliteRow = Record<string, string | number | null>
  * ```
  */
 export class SQLiteStore {
-  readonly db: DatabaseSync
+  readonly db: InstanceType<typeof DatabaseSyncType>
   readonly path: string
 
   /**
@@ -46,7 +60,7 @@ export class SQLiteStore {
     if (dbPath.includes('\x00')) {
       throw new Error('[RouteFlow] SQLiteStore: dbPath must not contain null bytes.')
     }
-    this.path = resolve(dbPath)
+    this.path = dbPath === ':memory:' ? ':memory:' : resolve(dbPath)
     // Directory traversal guard — when allowedDir is provided, ensure the
     // resolved path stays within that directory.
     if (allowedDir) {
@@ -57,8 +71,23 @@ export class SQLiteStore {
         )
       }
     }
-    mkdirSync(dirname(this.path), { recursive: true })
+    // ':memory:' is an in-memory database — no directory to create.
+    if (this.path !== ':memory:') {
+      mkdirSync(dirname(this.path), { recursive: true })
+    }
+    const DatabaseSync = getDatabaseSync()
     this.db = new DatabaseSync(this.path)
+
+    // Enable WAL (Write-Ahead Log) mode for better concurrent read performance.
+    // WAL allows readers and a single writer to run simultaneously without blocking
+    // each other, which is critical for real-time push workloads where reads and
+    // writes happen concurrently.
+    //
+    // SYNCHRONOUS = NORMAL gives a good balance of durability and speed:
+    // SQLite syncs at safe checkpoints but not on every transaction.
+    if (this.path !== ':memory:') {
+      this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;')
+    }
   }
 
   /** Execute one or more SQL statements (no return value). */
@@ -67,7 +96,7 @@ export class SQLiteStore {
   }
 
   /** Prepare a statement for repeated use. */
-  prepare(sql: string): ReturnType<DatabaseSync['prepare']> {
+  prepare(sql: string): ReturnType<InstanceType<typeof DatabaseSyncType>['prepare']> {
     return this.db.prepare(sql)
   }
 

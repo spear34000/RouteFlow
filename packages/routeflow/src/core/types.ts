@@ -15,6 +15,26 @@ export interface Context {
   body: unknown
   /** Request headers */
   headers: Record<string, string>
+  /**
+   * Unique request identifier for distributed tracing.
+   *
+   * Taken from the incoming `X-Request-ID` header when present; otherwise a
+   * fresh UUID is generated per request.  Include this in logs and error
+   * responses to correlate events across services.
+   *
+   * Always set for HTTP requests via `.flow()` and `.register()`.
+   * Not set for reactive WebSocket/SSE subscriptions (use the `clientId`
+   * provided to `onConnect` instead).
+   *
+   * @example
+   * ```ts
+   * app.use(async (ctx, next) => {
+   *   console.log(`[${ctx.requestId}] ${ctx.headers['x-path']}`)
+   *   await next()
+   * })
+   * ```
+   */
+  requestId?: string
 }
 
 /**
@@ -70,11 +90,58 @@ export interface DatabaseAdapter {
  * }
  * ```
  */
+/** Query options for TableStore.list(). */
+export interface StoreListOptions<T extends { id: number }> {
+  /** Filter rows by exact column value matches. */
+  where?: Partial<T>
+  /** Sort by a column name. Default: 'id'. */
+  orderBy?: string
+  /** Sort direction. Default: 'asc'. */
+  order?: 'asc' | 'desc'
+  /** Maximum rows to return. */
+  limit?: number
+  /**
+   * Skip the first N rows (page-based pagination).
+   * Prefer `after` for large tables.
+   */
+  offset?: number
+  /**
+   * Cursor-based pagination: return rows whose `id` is strictly greater than `after`.
+   * Efficient even at millions of rows because it uses the primary-key index.
+   */
+  after?: number
+}
+
+/**
+ * Symbol used by stores to carry a reference to their parent DatabaseAdapter.
+ * `flow()` reads this symbol to auto-discover adapters without requiring
+ * `createApp({ adapter })` to be set explicitly.
+ */
+export const ADAPTER_SYMBOL = Symbol.for('routeflow.adapter')
+
 export interface TableStore<T extends { id: number }> {
-  /** Return all rows. */
-  list(): Promise<T[]>
+  /**
+   * Return rows matching the given options.
+   * `options` is optional — omitting it returns all rows (existing implementations
+   * with `list(): Promise<T[]>` continue to work without any changes).
+   */
+  list(options?: StoreListOptions<T>): Promise<T[]>
   /** Return one row by id, or null. */
   get(id: number): Promise<T | null>
+  /**
+   * Return multiple rows by a list of ids in a single query.
+   * Result order matches the `ids` array; missing rows appear as `null`.
+   *
+   * Optional — stores that implement this enable `?include=` relation loading
+   * to use a single `WHERE id IN (...)` query instead of N parallel `get()` calls.
+   *
+   * @example
+   * ```ts
+   * const rows = await users.getMany([1, 2, 3])
+   * // → [{ id: 1, ... }, null, { id: 3, ... }]  (2 was deleted)
+   * ```
+   */
+  getMany?(ids: number[]): Promise<(T | null)[]>
   /** Insert a row and return it. */
   create(data: Omit<T, 'id'>): Promise<T>
   /** Update columns on a row and return the updated row, or null if not found. */
@@ -83,6 +150,8 @@ export interface TableStore<T extends { id: number }> {
   delete(id: number): Promise<boolean>
   /** Seed with initial rows if the store is empty. */
   seed?(rows: Omit<T, 'id'>[]): Promise<void>
+  /** Parent adapter, auto-discovered by flow(). Set by PostgresStore/RouteStore. */
+  readonly [ADAPTER_SYMBOL]?: DatabaseAdapter
 }
 
 /**
@@ -132,6 +201,35 @@ export type Middleware = (ctx: Context, next: () => Promise<void>) => Promise<vo
 export type CorsOrigin = boolean | string | string[]
 
 /**
+ * Lifecycle hooks for CRUD operations in a flow.
+ * Each hook receives the data and the request context.
+ */
+export interface FlowHooks {
+  /** Transform body before store.create(). Return the (possibly mutated) data. */
+  beforeCreate?: (data: Record<string, unknown>, ctx: Context) => Record<string, unknown> | Promise<Record<string, unknown>>
+  /** Called after store.create() succeeds. */
+  afterCreate?:  (row: unknown, ctx: Context) => void | Promise<void>
+  /** Transform body before store.update(). Return the (possibly mutated) data. */
+  beforeUpdate?: (data: Record<string, unknown>, ctx: Context) => Record<string, unknown> | Promise<Record<string, unknown>>
+  /** Called after store.update() succeeds. */
+  afterUpdate?:  (row: unknown, ctx: Context) => void | Promise<void>
+  /** Called before store.delete(). Throw to abort the delete. */
+  beforeDelete?: (id: number, ctx: Context) => void | Promise<void>
+  /** Called after store.delete() succeeds. */
+  afterDelete?:  (id: number, ctx: Context) => void | Promise<void>
+}
+
+/**
+ * Defines a join relation for use with `?include=<name>` query parameter.
+ */
+export interface FlowRelation {
+  /** The store whose rows should be joined in. */
+  store: TableStore<any>  // eslint-disable-line @typescript-eslint/no-explicit-any
+  /** Column name on the current table that holds the foreign key. */
+  foreignKey: string
+}
+
+/**
  * Options for `app.flow()`.
  */
 export interface FlowOptions {
@@ -144,7 +242,8 @@ export interface FlowOptions {
   only?: Array<'list' | 'get' | 'create' | 'update' | 'delete' | 'live'>
   /**
    * Table name to watch for reactive pushes.
-   * Default: first path segment without the leading slash (e.g. `'/items'` → `'items'`).
+   * Default: last non-parameter path segment (e.g. `'/items'` → `'items'`,
+   * `'/rooms/:roomId/messages'` → `'messages'`).
    */
   watch?: string
   /** Per-flow guards, applied after global middleware. */
@@ -167,6 +266,158 @@ export interface FlowOptions {
    * ```
    */
   push?: 'snapshot' | 'delta'
+
+  /**
+   * Derive a `WHERE` clause from the request context (path params + query string).
+   * Applied to **all** generated routes and reactive subscriptions automatically.
+   *
+   * Use this to scope a flow to a parent resource, e.g. room-scoped chat messages
+   * on `/rooms/:roomId/messages`.
+   *
+   * @example
+   * ```ts
+   * // Only serve/push messages belonging to the current room
+   * app.flow('/rooms/:roomId/messages', messages, {
+   *   push: 'delta',
+   *   queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
+   * })
+   * // GET /rooms/42/messages  → store.list({ where: { roomId: 42 } })
+   * // POST /rooms/42/messages → merges roomId:42 into the body automatically
+   * // WS subscribe /rooms/42/messages/live → only pushes messages where roomId === 42
+   * ```
+   */
+  queryFilter?: (ctx: Context) => Record<string, unknown>
+
+  /**
+   * Additional fields merged into the request body when creating a record.
+   * Defaults to the result of `queryFilter(ctx)` when `queryFilter` is set,
+   * so path params are automatically stamped onto created rows.
+   *
+   * Override only when the create body needs different fields than the filter.
+   *
+   * @example
+   * ```ts
+   * app.flow('/rooms/:roomId/messages', messages, {
+   *   queryFilter:  (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
+   *   // createMerge defaults to queryFilter — no need to repeat
+   * })
+   * ```
+   */
+  createMerge?: (ctx: Context) => Record<string, unknown>
+
+  /**
+   * Maximum number of rows sent in the **initial reactive push** when a client
+   * first subscribes to the `/live` endpoint.
+   *
+   * Without this, subscribing to `/messages/live` on a table with 500 k rows
+   * would serialize and send the entire dataset over the WebSocket.
+   *
+   * For chat / feeds: set a small value (e.g. `50`) and let the client load
+   * older history via the paginated REST endpoint.
+   *
+   * @example
+   * ```ts
+   * app.flow('/messages', messages, {
+   *   push:         'delta',
+   *   initialLimit: 50,   // send only the 50 most recent messages on connect
+   * })
+   * ```
+   */
+  initialLimit?: number
+
+  /**
+   * Automatically map URL query-string parameters to `store.list()` options.
+   *
+   * When set to `'auto'`, the following query params are recognised:
+   * - `?limit=N`      → `{ limit: N }`   (max rows, default server max)
+   * - `?offset=N`     → `{ offset: N }`  (skip N rows — page-based pagination)
+   * - `?after=N`      → `{ after: N }`   (cursor: return rows with id > N)
+   * - `?orderBy=col`  → `{ orderBy: col }`
+   * - `?order=asc|desc` → `{ order: 'asc'|'desc' }`
+   *
+   * All other query params are ignored (use `queryFilter` for column filtering).
+   *
+   * @default false
+   *
+   * @example
+   * ```ts
+   * // Paginated messages: GET /messages?after=100&limit=20&order=asc
+   * app.flow('/messages', messages, { query: 'auto', push: 'delta' })
+   * ```
+   */
+  query?: 'auto' | false
+
+  /**
+   * Filter applied to each reactive push subscriber.
+   * Receives the ChangeEvent and the subscriber's Context.
+   * Return `true` to push, `false` to skip.
+   *
+   * When `queryFilter` is set, a default filter is derived automatically
+   * (events whose changed row matches the filter are pushed; others are skipped).
+   * Set `filter` explicitly to override this behaviour.
+   *
+   * @example
+   * ```ts
+   * // Only push to subscribers whose room matches the changed message
+   * app.flow('/rooms/:roomId/messages', messages, {
+   *   queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
+   *   // filter is derived automatically from queryFilter — not needed here
+   * })
+   * ```
+   */
+  filter?: (event: ChangeEvent, ctx: Context) => boolean
+
+  /**
+   * Per-field validation functions. Called on POST / PUT / PATCH body fields.
+   * Return `true` (or `false` + no message) to pass; return a non-empty string
+   * to fail with that message in a 400 response.
+   *
+   * @example
+   * ```ts
+   * validate: {
+   *   username: v => (v as string)?.length >= 3 || '이름은 3자 이상이어야 합니다',
+   *   email:    v => String(v).includes('@') || '이메일 형식이 올바르지 않습니다',
+   * }
+   * ```
+   */
+  validate?: Record<string, (value: unknown, body: Record<string, unknown>) => boolean | string>
+
+  /**
+   * Lifecycle hooks — transform or inspect data at each CRUD stage.
+   *
+   * @example
+   * ```ts
+   * hooks: {
+   *   beforeCreate: (data, ctx) => ({ ...data, userId: ctx.headers['x-user-id'] }),
+   * }
+   * ```
+   */
+  hooks?: FlowHooks
+
+  /**
+   * Field names to strip from **all** API responses (list, get, create, update).
+   * Useful for hiding sensitive columns such as passwords or internal tokens.
+   *
+   * @example
+   * ```ts
+   * protect: ['password', 'secretToken']
+   * ```
+   */
+  protect?: string[]
+
+  /**
+   * Join relations included when the client passes `?include=<name>`.
+   * Uses N+1 simple look-up (suitable for low-cardinality joins).
+   *
+   * @example
+   * ```ts
+   * relations: {
+   *   user: { store: users, foreignKey: 'userId' },
+   * }
+   * // GET /messages?include=user  →  each message gets a `user` field attached
+   * ```
+   */
+  relations?: Record<string, FlowRelation>
 }
 
 /**
@@ -189,8 +440,12 @@ export interface OpenAPIOptions {
  * Options passed to createApp.
  */
 export interface AppOptions {
-  /** Database adapter instance. */
-  adapter: DatabaseAdapter
+  /**
+   * Database adapter instance.
+   * Optional when using `postgres()` / `sqlite()` factory functions with `.flow()` —
+   * the adapter is auto-discovered from the stores passed to `.flow()`.
+   */
+  adapter?: DatabaseAdapter
   /** Transport mechanism for real-time pushes. Defaults to 'websocket'. */
   transport?: 'websocket' | 'sse'
   /** Port to listen on. Defaults to 3000. */
@@ -214,6 +469,61 @@ export interface AppOptions {
    * Defaults to false.
    */
   logger?: boolean
+
+  /**
+   * Called when a WebSocket client connects.
+   * Use this to maintain a presence table or track online users.
+   *
+   * @param clientId - Framework-assigned UUID for this connection
+   * @param req      - Underlying Node.js HTTP upgrade request (contains headers, ip, etc.)
+   *
+   * @example
+   * ```ts
+   * const app = createApp({
+   *   adapter: db, port: 3000,
+   *   onConnect: (clientId, req) => {
+   *     const userId = req.headers['x-user-id'] as string
+   *     if (userId) presence.update(userId, { online: true, clientId })
+   *   },
+   *   onDisconnect: (clientId) => {
+   *     presence.updateByClientId(clientId, { online: false })
+   *   },
+   * })
+   * ```
+   */
+  onConnect?: (clientId: string, req: import('node:http').IncomingMessage) => void
+  /**
+   * Called when a WebSocket client disconnects (or errors out).
+   * Use this to mark users as offline in a presence table.
+   */
+  onDisconnect?: (clientId: string) => void
+
+  /**
+   * URL prefix prepended to **every** route registered via `.flow()` and `.register()`.
+   *
+   * Critical for App Store deployments: once a native app ships with `/items` baked
+   * into the bundle you cannot change it without a forced update.  Use `/v1` from day
+   * one so future breaking changes can move to `/v2` without breaking existing installs.
+   *
+   * @example
+   * ```ts
+   * createApp({ prefix: '/v1', port: 3000 })
+   *   .flow('/items', items)
+   * // → GET /v1/items, POST /v1/items, GET /v1/items/:id, GET /v1/items/live
+   * ```
+   */
+  prefix?: string
+
+  /**
+   * Enable gzip compression for HTTP JSON responses.
+   *
+   * Reduces payload size 5–10× on mobile metered connections.
+   * Applied only when the client sends `Accept-Encoding: gzip` **and** the
+   * response body is larger than 1 KB.  SSE streams are never compressed.
+   *
+   * Defaults to `false`. Enable in production with `compress: true`.
+   */
+  compress?: boolean
 }
 
 /**
@@ -230,6 +540,15 @@ export interface ReactiveEndpoint {
    * without a DB round-trip.  When set, the engine calls this instead of `handler`.
    */
   deltaFn?: (event: ChangeEvent) => unknown
+  /**
+   * Handler used **only** for the initial push when a client subscribes.
+   * Falls back to `handler` when absent.
+   *
+   * Use this to limit the initial dataset size: return the most recent N rows
+   * instead of the full table, while the regular handler returns the full list
+   * for snapshot pushes triggered by DB changes.
+   */
+  initialHandler?: (ctx: Context) => Promise<unknown>
 }
 
 /** Push function signature used by the engine to deliver updates to a client. */
