@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import type { ReactiveApp } from 'routeflow-api'
 import { renderDemoHtml } from './demo-page.js'
 
-const clientModuleUrl = new URL('../../../packages/routeflow/dist/client/index.mjs', import.meta.url)
+const clientModuleUrl = new URL('../../../packages/routeflow/dist/client/index.js', import.meta.url)
 type HtmlReply = { type: (contentType: string) => unknown }
 
 export function registerDemoUi(

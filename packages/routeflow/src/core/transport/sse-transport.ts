@@ -40,6 +40,8 @@ export class SseTransport {
   private readonly connections: Map<string, FastifyReply> = new Map()
   /** Per-client monotonically increasing event sequence number */
   private readonly sequences: Map<string, number> = new Map()
+  /** Per-client keepalive intervals to keep proxies from buffering/closing */
+  private readonly keepAliveTimers: Map<string, ReturnType<typeof setInterval>> = new Map()
 
   constructor(
     private readonly engine: ReactiveEngine,
@@ -122,6 +124,7 @@ export class SseTransport {
 
       this.connections.set(clientId, reply)
       this.sequences.set(clientId, 0)
+      this.startKeepAlive(clientId, reply)
 
       // Log the Last-Event-ID the client reported so future logic can use it
       // for selective replay if needed. Currently unused — the snapshot on
@@ -141,10 +144,7 @@ export class SseTransport {
 
       // Cleanup when client disconnects
       req.raw.on('close', () => {
-        this.engine.unsubscribe(clientId)
-        this.connections.delete(clientId)
-        this.sequences.delete(clientId)
-        if (!reply.raw.destroyed) reply.raw.end()
+        this.cleanupConnection(clientId)
       })
 
       // Keep the connection open — Fastify needs this to not auto-close
@@ -157,11 +157,36 @@ export class SseTransport {
 
   /** Close all open SSE connections. */
   async close(): Promise<void> {
-    for (const reply of this.connections.values()) {
-      if (!reply.raw.destroyed) reply.raw.end()
-    }
+    for (const clientId of this.connections.keys()) this.cleanupConnection(clientId)
     this.connections.clear()
     this.sequences.clear()
+    this.keepAliveTimers.clear()
+  }
+
+  private startKeepAlive(clientId: string, reply: FastifyReply): void {
+    const timer = setInterval(() => {
+      if (reply.raw.destroyed) {
+        this.cleanupConnection(clientId)
+        return
+      }
+      // SSE comments are ignored by the client but keep intermediaries from
+      // considering the stream idle and closing the socket.
+      reply.raw.write(': keep-alive\n\n')
+    }, 25_000)
+    this.keepAliveTimers.set(clientId, timer)
+  }
+
+  private cleanupConnection(clientId: string): void {
+    const reply = this.connections.get(clientId)
+    const timer = this.keepAliveTimers.get(clientId)
+    if (timer !== undefined) {
+      clearInterval(timer)
+      this.keepAliveTimers.delete(clientId)
+    }
+    this.engine.unsubscribe(clientId)
+    this.connections.delete(clientId)
+    this.sequences.delete(clientId)
+    if (reply && !reply.raw.destroyed) reply.raw.end()
   }
 
 }

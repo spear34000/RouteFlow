@@ -238,7 +238,11 @@ export class ReactiveEngine {
     const clientPairs = this.clientEndpointPaths.get(clientId)
     if (clientPairs) {
       for (const [pattern, path] of clientPairs) {
-        this.subscriptionsByEndpoint.get(pattern)?.get(path)?.delete(clientId)
+        const groups = this.subscriptionsByEndpoint.get(pattern)
+        const clientSet = groups?.get(path)
+        clientSet?.delete(clientId)
+        if (clientSet?.size === 0) groups?.delete(path)
+        if (groups?.size === 0) this.subscriptionsByEndpoint.delete(pattern)
       }
       this.clientEndpointPaths.delete(clientId)
     }
@@ -345,8 +349,17 @@ export class ReactiveEngine {
         ? endpoint.deltaFn(event)
         : await endpoint.handler(sub.ctx)
 
-      const connected = subs.filter(s => this.subscriptions.has(s.clientId))
-      if (connected.length === 0) return
+      let hasConnected = false
+      let allHaveFastPath = true
+      for (const s of subs) {
+        if (!this.subscriptions.has(s.clientId)) continue
+        hasConnected = true
+        if (!s.pushSerializedFn) {
+          allHaveFastPath = false
+          break
+        }
+      }
+      if (!hasConnected) return
 
       // ── WS pre-serialization optimisation ──────────────────────────────────
       // All subscribers in this group share the same path (that's how they were
@@ -354,12 +367,17 @@ export class ReactiveEngine {
       // When every subscriber provides a pushSerializedFn, we JSON-stringify
       // once and hand the pre-built string to each WS socket directly — saving
       // N−1 serialize calls for N connected clients.
-      const allHaveFastPath = connected.every(s => s.pushSerializedFn)
       if (allHaveFastPath) {
         const serialized = JSON.stringify({ type: 'update', path: sub.path, data })
-        for (const s of connected) s.pushSerializedFn!(serialized)
+        for (const s of subs) {
+          if (!this.subscriptions.has(s.clientId)) continue
+          s.pushSerializedFn!(serialized)
+        }
       } else {
-        for (const s of connected) s.pushFn(s.path, data)
+        for (const s of subs) {
+          if (!this.subscriptions.has(s.clientId)) continue
+          s.pushFn(s.path, data)
+        }
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)

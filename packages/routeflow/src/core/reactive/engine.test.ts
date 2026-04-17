@@ -195,6 +195,57 @@ describe('ReactiveEngine', () => {
     expect(pushed).not.toHaveBeenCalled()
   })
 
+  it('removes empty reverse-index groups on unsubscribe', async () => {
+    const pushed = vi.fn()
+
+    engine.registerEndpoint({
+      routePath: '/items/live',
+      options: { watch: 'items' },
+      handler: async () => [],
+    })
+
+    engine.subscribe('client-1', '/items/live', makeCtx(), pushed)
+    engine.unsubscribe('client-1')
+
+    const internal = engine as unknown as {
+      subscriptionsByEndpoint: Map<string, Map<string, Set<string>>>
+      clientEndpointPaths: Map<string, Array<[string, string]>>
+    }
+
+    expect(internal.clientEndpointPaths.size).toBe(0)
+    expect(internal.subscriptionsByEndpoint.size).toBe(0)
+  })
+
+  it('uses pre-serialized fast path once per fan-out group', async () => {
+    const pushSerialized1 = vi.fn()
+    const pushSerialized2 = vi.fn()
+    const push1 = vi.fn()
+    const push2 = vi.fn()
+
+    engine.registerEndpoint({
+      routePath: '/items/live',
+      options: { watch: 'items' },
+      handler: async () => [{ id: 1 }],
+    })
+
+    engine.subscribe('client-1', '/items/live', makeCtx(), push1, pushSerialized1)
+    engine.subscribe('client-2', '/items/live', makeCtx(), push2, pushSerialized2)
+    await Promise.resolve()
+    pushSerialized1.mockClear()
+    pushSerialized2.mockClear()
+    push1.mockClear()
+    push2.mockClear()
+
+    adapter.emit('items', { operation: 'INSERT', newRow: { id: 1 }, oldRow: null })
+    await Promise.resolve()
+
+    expect(pushSerialized1).toHaveBeenCalledOnce()
+    expect(pushSerialized2).toHaveBeenCalledOnce()
+    expect(push1).not.toHaveBeenCalled()
+    expect(push2).not.toHaveBeenCalled()
+    expect(pushSerialized1.mock.calls[0]?.[0]).toBe(pushSerialized2.mock.calls[0]?.[0])
+  })
+
   it('applies filter — pushes only to matching subscribers', async () => {
     const pushedUser1 = vi.fn()
     const pushedUser2 = vi.fn()

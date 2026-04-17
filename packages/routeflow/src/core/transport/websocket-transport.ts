@@ -233,6 +233,16 @@ export class WebSocketTransport {
     this.connectionCount++
 
     const clientId = randomUUID()
+    let cleaned = false
+    const cleanupClient = (): void => {
+      if (cleaned) return
+      cleaned = true
+      this.connectionCount = Math.max(0, this.connectionCount - 1)
+      this.stopHeartbeat(clientId)
+      this.engine.unsubscribe(clientId)
+      this.clientPatterns.delete(clientId)
+      try { this.onDisconnect?.(clientId) } catch { /* never crash on user hook */ }
+    }
 
     // Notify the application of the new connection — used for presence tracking.
     try { this.onConnect?.(clientId, req) } catch { /* never crash on user hook */ }
@@ -273,18 +283,11 @@ export class WebSocketTransport {
     })
 
     ws.on('close', () => {
-      this.connectionCount--
-      this.stopHeartbeat(clientId)
-      this.engine.unsubscribe(clientId)
-      this.clientPatterns.delete(clientId)
-      try { this.onDisconnect?.(clientId) } catch { /* never crash on user hook */ }
+      cleanupClient()
     })
 
     ws.on('error', (err) => {
-      this.connectionCount--
-      this.stopHeartbeat(clientId)
-      this.engine.unsubscribe(clientId)
-      this.clientPatterns.delete(clientId)
+      cleanupClient()
       // ws errors are expected (client disconnect); just log in dev
       if (process.env['NODE_ENV'] !== 'production') {
         console.error('[RouteFlow] WebSocket error:', err.message)
