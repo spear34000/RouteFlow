@@ -2,6 +2,26 @@
 
 RouteFlow 서버 코드는 `createApp()`으로 앱을 만들고, 컨트롤러 메서드에 `@Route`와 `@Reactive`를 붙이는 방식으로 작성합니다.
 
+이 문서는 "서버에서 RouteFlow를 어떻게 조립하는가"에 집중합니다.
+
+- 왜 이 구조가 필요한지 먼저 보려면 [`why-routeflow.md`](./why-routeflow.md)
+- 실제 설계 패턴이 궁금하면 [`usage-guide.md`](./usage-guide.md)
+- 가장 짧은 시작 예제는 [`getting-started.md`](./getting-started.md)
+
+## 서버에서 쉽게 풀리는 문제
+
+보통 서버에서 실시간 기능을 붙일 때는 다음이 번거롭습니다.
+
+- HTTP route와 WebSocket 채널을 따로 설계해야 한다
+- 특정 사용자나 room 범위만 받도록 fan-out을 다시 나눠야 한다
+- query나 include가 붙은 응답을 live하게 유지하려면 별도 로직이 필요하다
+
+RouteFlow 서버는 이 문제를 route 중심으로 푼다는 점이 핵심입니다.
+
+- `@Route`는 평범한 HTTP endpoint를 만든다
+- `@Reactive`는 그 endpoint를 live하게 만든다
+- `app.flow()`는 query-aware live, smart delta, live include 같은 고수준 패턴을 바로 붙인다
+
 ## 기본 구조
 
 ```ts
@@ -76,6 +96,8 @@ async getItem(ctx: Context) {
 - 요청 헤더 `ctx.headers`
 - 요청 추적 ID `ctx.requestId`
 
+즉, 먼저 REST route를 만들고 그다음 live를 붙이는 흐름이 기본입니다.
+
 ## `@Reactive(options)`
 
 live 엔드포인트에 붙입니다. DB 변경 이벤트가 들어오면, RouteFlow가 핸들러를 다시 실행해서 최신 결과를 구독자에게 푸시합니다.
@@ -102,6 +124,12 @@ async getUserItems(ctx: Context) {
 | `watch` | `string \| string[]` | 감시할 테이블 또는 컬렉션 이름 |
 | `filter` | `(event, ctx) => boolean` | 해당 변경이 특정 구독자에게 영향이 있는지 판별 |
 | `debounce` | `number` | 재계산 디바운스 시간(ms) |
+
+잘 맞는 경우:
+
+- 사용자별로 다른 결과를 돌려줄 때
+- 같은 테이블이어도 특정 room/project 구독자만 영향받아야 할 때
+- route 결과를 다시 계산하는 편이 이벤트 payload를 직접 설계하는 것보다 쉬울 때
 
 ## `app.register(Controller)`
 
@@ -144,6 +172,13 @@ relations: {
 ```
 
 `watch`는 relation store의 실제 변경 이벤트 이름을 명시할 때 씁니다.
+
+이 조합은 특히 아래 문제를 줄이는 데 강합니다.
+
+- `?limit`, `?after`, `?order`가 붙는 live 목록 응답
+- room/team/project 범위가 path param으로 결정되는 응답
+- `?include=author`처럼 relation이 붙은 응답
+- append형 route에서 delta push를 쓰고 싶지만, unsafe한 경우 fallback도 필요할 때
 
 ## `app.getFastify()`
 
@@ -229,6 +264,8 @@ app.use(async (ctx, next) => {
 - 사용자별 데이터가 다를 때
 - 같은 테이블이어도 일부 구독자만 영향을 받아야 할 때
 - 권한 범위를 구독 단계에서 한 번 더 좁혀야 할 때
+
+반대로 모든 구독자가 같은 결과를 받는 단순 route라면 `watch`만으로 충분한 경우가 많습니다.
 
 ## 전송 방식
 

@@ -10,17 +10,100 @@
 
 > **"REST처럼 쓰는데, DB 변경이 생기면 구독 중인 클라이언트에 자동으로 푸시된다."**
 
-RouteFlow는 기존 REST API 작성 방식을 유지하면서, DB 변경이 생기면 해당 엔드포인트를 구독 중인 클라이언트에게 최신 결과를 자동 푸시하는 반응형 백엔드 프레임워크입니다.
+기존 REST API는 그대로 두고, DB 변경 시 최신 route 결과를 자동으로 푸시하는 live endpoint를 붙일 수 있습니다.
 
 - Query-aware live subscriptions
 - Smart delta push
 - Live include responses
 
-Supabase Realtime·Firebase·Prisma Pulse와 달리 특정 플랫폼에 종속되지 않는 어댑터 패턴으로 설계되었습니다.
+## 왜 필요한가
+
+보통 실시간 기능은 CRUD API를 만든 뒤에 따로 붙습니다.
+
+- WebSocket 채널을 따로 설계해야 한다
+- `?roomId=1&limit=10` 같은 query마다 fan-out을 다시 나눠야 한다
+- `?include=author` 같은 relation 응답은 관련 테이블이 바뀔 때 다시 계산해야 한다
+- 단순 feed는 delta로 보내고, 복잡한 응답은 snapshot으로 보내는 판단도 직접 해야 한다
+
+RouteFlow는 이 복잡도를 "route 결과" 기준으로 다시 묶습니다.
+
+- REST endpoint를 먼저 만든다
+- 같은 자원에 `/live`를 붙인다
+- DB 변경이 생기면 해당 route 결과를 다시 계산해서 구독자에게 보낸다
+
+즉, 실시간 시스템을 따로 설계하는 대신 "기존 API를 live하게 만드는" 쪽에 집중할 수 있습니다.
+
+## 왜 RouteFlow인가
+
+Supabase Realtime, Firebase, Prisma Pulse 같은 도구들은 강력하지만 특정 플랫폼이나 데이터 모델에 더 가까운 편입니다.
+
+RouteFlow는 다른 문제를 겨냥합니다.
+
+- 이미 REST 중심 API 설계가 있다
+- 특정 DB나 BaaS에 묶이고 싶지 않다
+- query/filter/include가 붙은 응답을 그대로 live하게 만들고 싶다
+- 운영에서는 PostgreSQL, 로컬에서는 SQLite처럼 저장소를 바꿔 끼우고 싶다
+
+핵심 차별점은 세 가지입니다.
+
+1. Query-aware live
+경로만 보는 게 아니라 query가 달라지면 구독 그룹도 달라집니다.
+
+2. Smart delta push
+append/feed형 route는 delta로, 복잡한 route는 snapshot으로 안전하게 동작합니다.
+
+3. Live include
+`?include=author` 같은 relation 응답도 관련 데이터 변경 시 다시 계산할 수 있습니다.
+
+더 자세한 설명은 [`docs/why-routeflow.md`](./docs/why-routeflow.md)에 정리되어 있습니다.
+
+## 15초 예제
+
+```ts
+app.flow('/rooms/:roomId/messages', messages, {
+  push: 'smart',
+  queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
+  query: 'auto',
+  relations: {
+    author: { store: users, foreignKey: 'authorId', watch: 'users' },
+  },
+  liveInclude: true,
+})
+```
+
+이 설정 하나로 다음이 같이 붙습니다.
+
+- `/rooms/1/messages/live?limit=10` 같은 room-scoped live route
+- query별 fan-out 분리
+- 단순한 경우 delta push
+- `?include=author` 응답의 relation 변경 재계산
+
+## 어떤 문제를 쉽게 푸나
+
+- 채팅, 알림, activity feed 같은 append형 live API
+- room, team, project 단위로 나뉘는 scoped subscription
+- REST 목록 응답에 `?limit`, `?after`, `?order` 같은 query가 붙는 경우
+- `?include=user` 같은 관계 확장 응답을 실시간으로 유지해야 하는 경우
+- 로컬 개발은 SQLite, 운영은 Postgres처럼 저장소를 바꿔야 하는 경우
+
+## 언제 잘 맞나
+
+- REST API를 이미 쓰고 있고, 그 API를 live하게 만들고 싶을 때
+- 서버가 response shape를 통제해야 할 때
+- DB 변경을 route 결과와 직접 연결하고 싶을 때
+- 실시간 layer를 애플리케이션 코드에서 직접 운영하고 싶을 때
+
+## 언제 안 맞나
+
+- DB row change 자체를 그대로 스트리밍하면 충분한 경우
+- 특정 BaaS 플랫폼의 생태계에 깊게 묶여도 괜찮은 경우
+- route 결과보다 이벤트 로그/이벤트 소싱 자체가 중심인 경우
 
 ## 문서
 
 - [`docs/getting-started.md`](./docs/getting-started.md)
+- [`docs/why-routeflow.md`](./docs/why-routeflow.md)
+- [`docs/usage-guide.md`](./docs/usage-guide.md)
 - [`docs/server.md`](./docs/server.md)
 - [`docs/client.md`](./docs/client.md)
 - [`docs/adapters.md`](./docs/adapters.md)
@@ -58,8 +141,6 @@ npm install routeflow-api pg
 - 2026-04-17 기준 최신 LTS는 `Node.js 24.15.0 (LTS)`이며, SQLite 사용 시 이 버전을 권장합니다.
 - `routeflow-api/sqlite`는 이제 ESM과 CommonJS `require()` 양쪽에서 동작합니다.
 
----
-
 ## 빠른 시작
 
 ### 5분 체험
@@ -87,19 +168,12 @@ curl -X POST http://localhost:3020/todos \
 pnpm run example:todos:smoke
 ```
 
-이 smoke test는 실제 예제 서버를 띄우고 `GET /todos`, `POST /todos`, `/todos/live` push까지 확인합니다.
-
 ### 차별화 예제
 
 RouteFlow의 고유 기능을 한 번에 보려면 이 예제를 실행하면 됩니다.
 
 ```bash
 pnpm run example:differentiation
-```
-
-자동 검증:
-
-```bash
 pnpm run example:differentiation:smoke
 ```
 
@@ -109,22 +183,6 @@ pnpm run example:differentiation:smoke
   Query-aware live + live include
 - `/activity/live`
   `push: 'smart'`가 단순 route에서는 delta로 동작
-
-핵심 설정 예시:
-
-```ts
-app.flow('/rooms/:roomId/messages', messages, {
-  push: 'smart',
-  queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
-  query: 'auto',
-  relations: {
-    author: { store: users, foreignKey: 'authorId', watch: 'users' },
-  },
-  liveInclude: true,
-})
-```
-
-relation alias와 실제 변경 소스 이름이 다르면 `relations.<name>.watch`를 명시하면 됩니다.
 
 ### 파일 저장 서버 (SQLite, 권장)
 
@@ -136,7 +194,7 @@ import { createApp, Reactive, Route } from 'routeflow-api'
 import { RouteStore } from 'routeflow-api/sqlite'
 import type { Context } from 'routeflow-api'
 
-const db    = new RouteStore('./data/app.db')
+const db = new RouteStore('./data/app.db')
 const items = db.table('items', { name: 'text', createdAt: 'text' })
 
 await items.seed([{ name: 'Apple', createdAt: '2026-01-01T00:00:00.000Z' }])
@@ -150,7 +208,6 @@ class ItemController {
   @Route('POST', '/items')
   async createItem(ctx: Context) {
     const body = ctx.body as { name: string }
-    // create() → DB 저장 + @Reactive WebSocket 푸시 자동 발동
     return items.create({ name: body.name, createdAt: new Date().toISOString() })
   }
 
@@ -166,33 +223,6 @@ app.register(ItemController)
 await app.listen()
 ```
 
-### 인메모리 서버 (테스트·데모)
-
-```typescript
-import { createApp, Reactive, Route, MemoryAdapter } from 'routeflow-api'
-import type { Context } from 'routeflow-api'
-
-const adapter = new MemoryAdapter()
-const data    = [{ id: 1, name: 'Apple' }]
-
-class ItemController {
-  @Route('GET', '/items')
-  async getItems(_ctx: Context) { return data }
-
-  @Reactive({ watch: 'items' })
-  @Route('GET', '/items/live')
-  async getLiveItems(_ctx: Context) { return data }
-}
-
-const app = createApp({ adapter, port: 3000 })
-app.register(ItemController)
-await app.listen()
-
-// 변경을 수동으로 발생시켜 구독자에 푸시
-data.push({ id: 2, name: 'Orange' })
-adapter.emit('items', { operation: 'INSERT', newRow: { id: 2, name: 'Orange' }, oldRow: null })
-```
-
 ### 클라이언트
 
 ```typescript
@@ -200,158 +230,37 @@ import { createClient } from 'routeflow-api/client'
 
 const client = createClient('http://localhost:3000')
 
-// REST 스냅샷
 const items = await client.get('/items')
 
-// live 구독 — DB 변경 시 자동 수신
 const unsubscribe = client.subscribe('/items/live', (latest) => {
   console.log('업데이트:', latest)
 })
 ```
 
----
+## 공식 지원
 
-## 어댑터 교체 — 컨트롤러 코드 불변
+공식 진입점:
 
-컨트롤러는 `TableStore<T>` 인터페이스만 봅니다. 백엔드가 바뀌어도 핸들러 코드는 그대로입니다.
+- `routeflow-api`
+- `routeflow-api/sqlite`
+- `routeflow-api/client`
+- `routeflow-api/adapters/postgres`
+- `routeflow-api/adapters/mongodb`
+- `routeflow-api/adapters/mysql`
+- `routeflow-api/adapters/redis`
+- `routeflow-api/adapters/dynamodb`
+- `routeflow-api/adapters/elasticsearch`
+- `routeflow-api/adapters/opensearch`
+- `routeflow-api/adapters/snowflake`
+- `routeflow-api/adapters/cassandra`
+- `routeflow-api/adapters/kafka`
+- `routeflow-api/adapters/webhook`
 
-```ts
-import type { TableStore } from 'routeflow-api'
+지원 전송:
 
-function createItemController(items: TableStore<Item>) {
-  class ItemController {
-    @Route('GET', '/items')
-    async getItems(_ctx: Context) { return items.list() }
+- WebSocket
+- SSE
 
-    @Reactive({ watch: 'items' })
-    @Route('GET', '/items/live')
-    async getLiveItems(_ctx: Context) { return items.list() }
-  }
-  return ItemController
-}
+## 라이선스
 
-// SQLite (로컬)
-const db    = new RouteStore('./data/app.db')
-const items = db.table('items', { name: 'text', createdAt: 'text' })
-createApp({ adapter: db, port: 3000 }).register(createItemController(items))
-
-// PostgreSQL (운영) — 같은 팩토리
-const store   = new PostgresItemStore(pool)   // implements TableStore<Item>
-const adapter = new PostgresAdapter({ connectionString })
-createApp({ adapter, port: 3000 }).register(createItemController(store))
-```
-
----
-
-## .routeflow 폴더
-
-서버 시작 시 프로젝트 루트에 `.routeflow/info.json`이 자동 생성됩니다.
-
-```json
-{
-  "port": 3000,
-  "transport": "websocket",
-  "adapter": "RouteStore",
-  "routes": [
-    { "method": "GET",  "path": "/items",      "reactive": false },
-    { "method": "POST", "path": "/items",      "reactive": false },
-    { "method": "GET",  "path": "/items/live", "reactive": true  }
-  ],
-  "startedAt": "2026-04-13T00:00:00.000Z"
-}
-```
-
-`.gitignore`에 추가를 권장합니다.
-
-```
-.routeflow/
-```
-
----
-
-## 패키지
-
-| import 경로 | 설명 |
-|---|---|
-| `routeflow-api` | 코어 — `createApp`, `@Route`, `@Reactive`, `TableStore`, `MemoryAdapter`, `PollingAdapter` |
-| `routeflow-api/sqlite` | `RouteStore` — SQLite 통합 어댑터 + 테이블 CRUD |
-| `routeflow-api/client` | 브라우저/Node 클라이언트 SDK |
-| `routeflow-api/adapters/postgres` | PostgreSQL (LISTEN/NOTIFY) |
-| `routeflow-api/adapters/mysql` | MySQL (binlog) |
-| `routeflow-api/adapters/mongodb` | MongoDB (Change Streams) |
-| `routeflow-api/adapters/redis` | Redis (Pub/Sub) |
-| `routeflow-api/adapters/dynamodb` | DynamoDB (Streams) |
-| `routeflow-api/adapters/elasticsearch` | Elasticsearch |
-| `routeflow-api/adapters/opensearch` | OpenSearch |
-| `routeflow-api/adapters/snowflake` | Snowflake |
-
-### 공식 지원 DB
-
-`PostgreSQL` · `MySQL` · `MongoDB` · `Redis` · `DynamoDB` · `Elasticsearch` · `OpenSearch` · `Snowflake`
-
----
-
-## 예제 실행
-
-```bash
-pnpm install
-pnpm build
-
-# SQLite 파일 저장 데모 (WebSocket, :3000)
-pnpm run example:memory
-
-# SSE 전송 데모 (:3001)
-pnpm run example:memory:sse
-
-# Todo 예제 (:3020)
-pnpm run example:todos
-
-# Todo smoke test
-pnpm run example:todos:smoke
-
-# PostgreSQL 데모 (:3002)
-pnpm run example:postgres
-
-# 클라이언트 데모 (다른 터미널에서)
-pnpm run example:client
-```
-
-브라우저에서 실행 중인 포트를 열면 REST 스냅샷과 live 푸시를 한 화면에서 볼 수 있습니다.
-
----
-
-## 개발
-
-```bash
-pnpm install
-pnpm build
-pnpm test
-```
-
----
-
-## v1.0.22
-
-운영 환경 기준의 핵심 개선이 들어갔습니다.
-
-- 엔진 구독 라우팅이 전체 구독자 순회에서 endpoint/path 역방향 인덱스 기반으로 바뀌어, fan-out 비용이 전체 연결 수가 아니라 실제 매칭 구독자 수에 비례합니다.
-- SQLite `RouteStore`가 테이블별 64개 LRU statement cache를 유지해 반복 CRUD 쿼리의 parse/compile 비용을 줄입니다.
-- `SIGTERM`, `SIGINT` graceful shutdown이 기본 동작으로 추가되어 컨테이너 종료 시 in-flight 요청과 DB 연결을 더 안전하게 정리합니다.
-- `GET /_health`와 자동 `X-Request-ID` 전파가 기본 제공되어 liveness probe와 요청 추적을 바로 붙일 수 있습니다.
-
----
-
-## 왜 RouteFlow인가
-
-기존 방식은 HTTP API · WebSocket/SSE · DB 변경 감지 · 클라이언트 이벤트 처리를 각각 따로 다룹니다.  
-RouteFlow는 이걸 하나로 묶습니다. 개발자는 기존처럼 라우트를 만들고 `@Reactive`를 붙이면 되고, 프레임워크가 DB 변경을 감지해서 live 엔드포인트 결과를 다시 계산해 푸시합니다.
-
-**장점**
-- REST 작성 방식 안에서 실시간 기능을 붙일 수 있음
-- WebSocket 프로토콜을 직접 다루지 않아도 됨
-- 클라이언트는 경로 기반 구독만으로 최신 결과를 받음
-- DB 어댑터를 교체해도 컨트롤러 코드 유지
-
-**한계**
-- 변경마다 엔드포인트를 재실행하면 성능 비용이 커질 수 있음
-- 멀티 인스턴스 환경에서는 구독 상태 동기화가 추가 과제
+Apache 2.0

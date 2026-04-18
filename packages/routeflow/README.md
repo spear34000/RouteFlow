@@ -4,13 +4,32 @@
 [![npm downloads](https://img.shields.io/npm/dw/routeflow-api)](https://www.npmjs.com/package/routeflow-api)
 [![CI](https://img.shields.io/github/actions/workflow/status/spear34000/RouteFlow/ci.yml?branch=main&label=CI)](https://github.com/spear34000/RouteFlow/actions/workflows/ci.yml)
 
-RouteFlow — query-aware realtime REST API framework with smart delta push and live include
+Keep your REST API and add live endpoints with query-aware subscriptions and smart delta push.
 
 > REST처럼 쓰는데, 쿼리와 관계까지 이해해서 바뀐 것만 실시간으로 푸시됩니다.
 
 - Query-aware live subscriptions
 - Smart delta push
 - Live include responses
+
+## Why RouteFlow
+
+RouteFlow is for teams that want to keep their REST API shape, but do not want to rebuild a separate realtime layer for:
+
+- query-specific fan-out
+- scoped subscriptions like room, team, or project feeds
+- relation-aware responses such as `?include=author`
+- deciding when delta push is safe and when snapshot fallback is safer
+
+Instead of designing events first, RouteFlow lets you make existing routes live.
+
+## What It Solves
+
+- Live REST endpoints backed by database changes
+- Query-aware subscriptions
+- Smart delta push for simple feed-style routes
+- Live include recomputation when related data changes
+- Adapter-based architecture without hard vendor lock-in
 
 ## Install
 

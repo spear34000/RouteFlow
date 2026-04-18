@@ -2,6 +2,8 @@
 
 RouteFlow는 기존 REST API처럼 라우트를 만들고, live 엔드포인트에만 `@Reactive`를 붙이는 방식으로 사용합니다.
 
+이 프로젝트가 왜 필요한지부터 보고 싶다면 [`why-routeflow.md`](./why-routeflow.md)를 먼저 읽어도 좋습니다.
+
 핵심 메시지는 이 한 줄입니다.
 
 - REST처럼 만든다.
