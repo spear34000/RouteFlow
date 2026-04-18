@@ -1,4 +1,5 @@
 import type { Context } from './types.js'
+import { sanitizeJsonValue } from './sanitize.js'
 
 /**
  * Safely access the typed request body.
@@ -21,5 +22,5 @@ import type { Context } from './types.js'
 export function body<T extends object = Record<string, unknown>>(ctx: Context): Partial<T> {
   if (ctx.body === null || ctx.body === undefined) return {} as Partial<T>
   if (typeof ctx.body !== 'object' || Array.isArray(ctx.body)) return {} as Partial<T>
-  return ctx.body as Partial<T>
+  return sanitizeJsonValue(ctx.body) as Partial<T>
 }

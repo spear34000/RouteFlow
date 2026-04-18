@@ -237,14 +237,33 @@ describe("query:'auto' — URL query params", () => {
     }
   })
 
-  it('?limit is capped at 10_000', async () => {
+  it('rejects ?limit values above 10_000 with 400', async () => {
     const store = makeMessageStore()
     const { app, baseUrl } = await startApp((a) => {
       a.flow('/messages', store, { query: 'auto' })
     })
     try {
-      await fetch(`${baseUrl}/messages?limit=999999`)
-      expect(store.listCalls.at(-1)).toMatchObject({ limit: 10_000 })
+      const res = await fetch(`${baseUrl}/messages?limit=999999`)
+      const data = await res.json() as Record<string, string>
+      expect(res.status).toBe(400)
+      expect(data['error']).toBe('BAD_REQUEST')
+      expect(store.listCalls).toHaveLength(0)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('rejects unsafe query:auto orderBy values with 400', async () => {
+    const store = makeMessageStore()
+    const { app, baseUrl } = await startApp((a) => {
+      a.flow('/messages', store, { query: 'auto' })
+    })
+    try {
+      const res = await fetch(`${baseUrl}/messages?orderBy=createdAt;DROP TABLE messages`)
+      const data = await res.json() as Record<string, string>
+      expect(res.status).toBe(400)
+      expect(data['error']).toBe('BAD_REQUEST')
+      expect(store.listCalls).toHaveLength(0)
     } finally {
       await app.close()
     }

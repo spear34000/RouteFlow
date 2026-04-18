@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import type { ReactiveEngine } from '../reactive/engine.js'
 import { extractParams, normalizeSubscriptionPath, pathMatchesPattern } from '../reactive/engine.js'
+import { sanitizeStringRecord } from '../sanitize.js'
 import type { Context } from '../types.js'
 import { ReactiveApiError } from '../errors.js'
 
@@ -89,19 +90,16 @@ export class SseTransport {
 
       // Build a clean query object — strip 'path' and guard against prototype
       // pollution via keys like '__proto__', 'constructor', 'prototype'.
-      const dangerousKeys = new Set(['__proto__', 'constructor', 'prototype'])
-      const clientQuery: Record<string, string> = { ...normalized.query }
-      for (const [k, v] of Object.entries(query)) {
-        if (k !== 'path' && !dangerousKeys.has(k) && typeof v === 'string') {
-          clientQuery[k] = v
-        }
-      }
+      const clientQuery = sanitizeStringRecord({
+        ...normalized.query,
+        ...Object.fromEntries(Object.entries(query).filter(([key]) => key !== 'path')),
+      })
 
       const ctx: Context = {
         params,
         query: clientQuery,
         body: undefined,
-        headers: req.headers as Record<string, string>,
+        headers: sanitizeStringRecord(req.headers, { allowArrays: true }),
       }
 
       const clientId = randomUUID()

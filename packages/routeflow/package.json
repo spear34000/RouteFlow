@@ -1,6 +1,6 @@
 {
   "name": "routeflow-api",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "RouteFlow — query-aware realtime REST API framework with smart delta push and live include",
   "license": "Apache-2.0",
   "repository": {
@@ -130,7 +130,7 @@
     "access": "public"
   },
   "dependencies": {
-    "fastify": "^4.28.0",
+    "fastify": "^5.8.5",
     "reflect-metadata": "^0.2.2",
     "ws": "^8.18.0"
   },
@@ -146,7 +146,7 @@
     "pg": "^8.13.0",
     "react": ">=18.0.0",
     "react-dom": ">=18.0.0",
-    "snowflake-sdk": "^1.10.0"
+    "snowflake-sdk": "^2.0.4"
   },
   "peerDependenciesMeta": {
     "pg": {

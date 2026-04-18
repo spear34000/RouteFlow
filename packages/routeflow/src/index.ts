@@ -15,6 +15,7 @@ import { WebSocketTransport } from './core/transport/websocket-transport.js'
 import { SseTransport } from './core/transport/sse-transport.js'
 import { ReactiveApiError, badRequest, notFound } from './core/errors.js'
 import { body } from './core/body.js'
+import { sanitizeJsonValue, sanitizeStringRecord } from './core/sanitize.js'
 import { ROUTE_METADATA } from './core/decorator/route.js'
 import { REACTIVE_METADATA } from './core/decorator/reactive.js'
 import { RouteStore } from './core/adapter/route-store.js'
@@ -73,6 +74,7 @@ export type {
 type AnyTransport = WebSocketTransport | SseTransport
 
 const isProd = process.env['NODE_ENV'] === 'production'
+const SAFE_QUERY_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 
 /**
  * Main application class. Use `createApp()` to instantiate.
@@ -198,8 +200,19 @@ export class ReactiveApp {
         })
       }
       // Never leak internal error details in production
-      const message = isProd ? 'Internal server error' : (error.message ?? 'Unknown error')
-      return reply.status(error.statusCode ?? 500).send({
+      const message = isProd
+        ? 'Internal server error'
+        : error instanceof Error
+          ? error.message
+          : 'Unknown error'
+      const statusCode =
+        typeof error === 'object' &&
+        error !== null &&
+        'statusCode' in error &&
+        typeof (error as { statusCode?: unknown }).statusCode === 'number'
+          ? (error as { statusCode: number }).statusCode
+          : 500
+      return reply.status(statusCode).send({
         error: 'INTERNAL_ERROR',
         message,
       })
@@ -335,10 +348,10 @@ export class ReactiveApp {
         const requestId = (req.headers['x-request-id'] as string | undefined) ?? randomUUID()
         reply.header('X-Request-ID', requestId)
         const ctx: Context = {
-          params: req.params as Record<string, string>,
-          query: req.query as Record<string, string>,
-          body: req.body,
-          headers: req.headers as Record<string, string>,
+          params: sanitizeStringRecord(req.params),
+          query: sanitizeStringRecord(req.query),
+          body: sanitizeJsonValue(req.body),
+          headers: sanitizeStringRecord(req.headers, { allowArrays: true }),
           requestId,
         }
         try {
@@ -491,11 +504,19 @@ export class ReactiveApp {
       if (queryFilter) opts['where'] = queryFilter(ctx)
       if (queryMode === 'auto') {
         const q = ctx.query
-        if (q['limit']   != null) opts['limit']   = Math.min(Number(q['limit']),  10_000)
-        if (q['offset']  != null) opts['offset']  = Number(q['offset'])
-        if (q['after']   != null) opts['after']   = Number(q['after'])
-        if (q['orderBy'] != null) opts['orderBy'] = q['orderBy']
-        if (q['order']   != null) opts['order']   = q['order']
+        if (q['limit']   != null) opts['limit']   = parseQueryInt(q['limit'], 'limit', { min: 0, max: 10_000 })
+        if (q['offset']  != null) opts['offset']  = parseQueryInt(q['offset'], 'offset', { min: 0 })
+        if (q['after']   != null) opts['after']   = parseQueryInt(q['after'], 'after', { min: 0 })
+        if (q['orderBy'] != null) {
+          if (!SAFE_QUERY_KEY.test(q['orderBy'])) throw badRequest('Invalid orderBy query parameter')
+          opts['orderBy'] = q['orderBy']
+        }
+        if (q['order']   != null) {
+          if (q['order'] !== 'asc' && q['order'] !== 'desc') {
+            throw badRequest('Invalid order query parameter')
+          }
+          opts['order'] = q['order']
+        }
       }
       return opts
     }
@@ -632,10 +653,10 @@ export class ReactiveApp {
       const requestId = (req.headers['x-request-id'] as string | undefined) ?? randomUUID()
       reply.header('X-Request-ID', requestId)
       const ctx: Context = {
-        params:    req.params  as Record<string, string>,
-        query:     req.query   as Record<string, string>,
-        body:      req.body,
-        headers:   req.headers as Record<string, string>,
+        params:    sanitizeStringRecord(req.params),
+        query:     sanitizeStringRecord(req.query),
+        body:      sanitizeJsonValue(req.body),
+        headers:   sanitizeStringRecord(req.headers, { allowArrays: true }),
         requestId,
       }
       try {
@@ -1062,6 +1083,22 @@ async function runChain(middlewares: readonly Middleware[], ctx: Context): Promi
     await middlewares[i++](ctx, next)
   }
   await next()
+}
+
+function parseQueryInt(
+  raw: string,
+  label: string,
+  options: { min: number; max?: number },
+): number {
+  if (!/^\d+$/.test(raw)) throw badRequest(`Invalid ${label} query parameter`)
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < options.min) {
+    throw badRequest(`Invalid ${label} query parameter`)
+  }
+  if (options.max != null && value > options.max) {
+    throw badRequest(`Invalid ${label} query parameter`)
+  }
+  return value
 }
 
 // ── Swagger UI HTML builder ─────────────────────────────────────────────────

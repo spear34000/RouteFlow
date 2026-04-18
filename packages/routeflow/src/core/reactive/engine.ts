@@ -473,13 +473,22 @@ function normalizeWatch(watch: string | string[]): string[] {
 
 function buildGroupKey(endpoint: ReactiveEndpoint, pathname: string, ctx: Context): string {
   const signature = endpoint.groupKeyFn?.(ctx)
-  return signature ? `${pathname}?${signature}` : ctx.query && Object.keys(ctx.query).length > 0
-    ? `${pathname}?${new URLSearchParams(ctx.query).toString()}`
-    : pathname
+  return signature ? `${pathname}?${signature}` : serializeQueryGroup(pathname, ctx.query)
 }
 
 function shouldUseDelta(endpoint: ReactiveEndpoint, event: ChangeEvent): boolean {
   if (!endpoint.deltaFn) return false
   if (!endpoint.deltaWatch?.length) return true
   return endpoint.deltaWatch.includes(event.table)
+}
+
+function serializeQueryGroup(pathname: string, query: Record<string, string>): string {
+  const keys = Object.keys(query)
+  if (keys.length === 0) return pathname
+
+  const params = new URLSearchParams()
+  for (const key of keys.sort()) {
+    params.set(key, query[key]!)
+  }
+  return `${pathname}?${params.toString()}`
 }

@@ -39,5 +39,10 @@
   },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "follow-redirects": "^1.16.0"
+    }
   }
 }

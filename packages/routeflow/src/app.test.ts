@@ -371,6 +371,19 @@ describe('body() helper', () => {
   it('returns {} for string body', () => {
     expect(body({ body: 'raw', params: {}, query: {}, headers: {} })).toEqual({})
   })
+
+  it('strips dangerous keys from object bodies without polluting prototypes', () => {
+    const raw = JSON.parse('{"name":"Apple","__proto__":{"polluted":"yes"},"nested":{"safe":1,"__proto__":{"polluted":"nested"}}}')
+    const parsed = body<{ name: string; nested?: { safe: number } }>({
+      body: raw,
+      params: {},
+      query: {},
+      headers: {},
+    })
+
+    expect(parsed).toEqual({ name: 'Apple', nested: { safe: 1 } })
+    expect(Object.prototype).not.toHaveProperty('polluted')
+  })
 })
 
 // ── FastAPIClient ─────────────────────────────────────────────────────────────

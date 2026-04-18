@@ -358,4 +358,42 @@ describe('ReactiveEngine', () => {
     expect(pushedOpen).toHaveBeenCalledWith('/items/live?status=open', [{ status: 'open' }])
     expect(pushedClosed).toHaveBeenCalledWith('/items/live?status=closed', [{ status: 'closed' }])
   })
+
+  it('treats reordered query strings as the same default fan-out group', async () => {
+    const handler = vi.fn(async (ctx: Context) => [{ key: `${ctx.query['a']}:${ctx.query['b']}` }])
+    const pushed1 = vi.fn()
+    const pushed2 = vi.fn()
+
+    engine.registerEndpoint({
+      routePath: '/items/live',
+      options: { watch: 'items' },
+      handler,
+    })
+
+    engine.subscribe(
+      'client-1',
+      '/items/live?a=1&b=2',
+      { ...makeCtx(), query: { a: '1', b: '2' } },
+      pushed1,
+    )
+    engine.subscribe(
+      'client-2',
+      '/items/live?b=2&a=1',
+      { ...makeCtx(), query: { b: '2', a: '1' } },
+      pushed2,
+    )
+
+    await Promise.resolve()
+    handler.mockClear()
+    pushed1.mockClear()
+    pushed2.mockClear()
+
+    adapter.emit('items', { operation: 'INSERT', newRow: { id: 1 }, oldRow: null })
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(pushed1).toHaveBeenCalledWith('/items/live?a=1&b=2', [{ key: '1:2' }])
+    expect(pushed2).toHaveBeenCalledWith('/items/live?b=2&a=1', [{ key: '1:2' }])
+  })
 })

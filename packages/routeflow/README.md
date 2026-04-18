@@ -1,5 +1,9 @@
 # routeflow-api
 
+[![npm version](https://img.shields.io/npm/v/routeflow-api)](https://www.npmjs.com/package/routeflow-api)
+[![npm downloads](https://img.shields.io/npm/dw/routeflow-api)](https://www.npmjs.com/package/routeflow-api)
+[![CI](https://img.shields.io/github/actions/workflow/status/spear34000/RouteFlow/ci.yml?branch=main&label=CI)](https://github.com/spear34000/RouteFlow/actions/workflows/ci.yml)
+
 RouteFlow — query-aware realtime REST API framework with smart delta push and live include
 
 > REST처럼 쓰는데, 쿼리와 관계까지 이해해서 바뀐 것만 실시간으로 푸시됩니다.
@@ -18,6 +22,14 @@ For PostgreSQL:
 ```bash
 npm install routeflow-api pg
 ```
+
+## Project health
+
+- Issues: [GitHub Issues](https://github.com/spear34000/RouteFlow/issues)
+- Contributing: [CONTRIBUTING.md](https://github.com/spear34000/RouteFlow/blob/main/CONTRIBUTING.md)
+- Security: [SECURITY.md](https://github.com/spear34000/RouteFlow/blob/main/SECURITY.md)
+- Code of Conduct: [CODE_OF_CONDUCT.md](https://github.com/spear34000/RouteFlow/blob/main/CODE_OF_CONDUCT.md)
+- Support: [SUPPORT.md](https://github.com/spear34000/RouteFlow/blob/main/SUPPORT.md)
 
 ## Node.js compatibility
 

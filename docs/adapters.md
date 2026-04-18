@@ -173,7 +173,7 @@ class ItemStore implements TableStore<Item> {
 | DynamoDB | `routeflow-api/adapters/dynamodb` | `@aws-sdk/client-dynamodb` | Streams |
 | Elasticsearch | `routeflow-api/adapters/elasticsearch` | `@elastic/elasticsearch` | 외부 변경 소스 |
 | OpenSearch | `routeflow-api/adapters/opensearch` | `@opensearch-project/opensearch` | 외부 변경 소스 |
-| Snowflake | `routeflow-api/adapters/snowflake` | `snowflake-sdk` | stream/task |
+| Snowflake | `routeflow-api/adapters/snowflake` | `snowflake-sdk@^2.0.4` | stream/task |
 
 ```bash
 npm install routeflow-api pg        # PostgreSQL

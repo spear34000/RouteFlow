@@ -122,7 +122,7 @@ app.flow('/rooms/:roomId/messages', messages, {
   queryFilter: (ctx) => ({ roomId: Number(ctx.params['roomId']) }),
   query: 'auto',
   relations: {
-    author: { store: users, foreignKey: 'authorId' },
+    author: { store: users, foreignKey: 'authorId', watch: 'users' },
   },
   liveInclude: true,
 })
@@ -134,6 +134,16 @@ app.flow('/rooms/:roomId/messages', messages, {
   room id, `limit`, `after`, `order` 같은 결과 shape 차이를 live subscription 그룹에 반영합니다.
 - `relations` + `liveInclude: true`
   `?include=author` 같은 응답을 live로 유지하고, author 변경도 다시 계산합니다.
+
+relation alias와 실제 변경 소스 이름이 다를 때:
+
+```ts
+relations: {
+  author: { store: users, foreignKey: 'authorId', watch: 'users' },
+}
+```
+
+`watch`는 relation store의 실제 변경 이벤트 이름을 명시할 때 씁니다.
 
 ## `app.getFastify()`
 

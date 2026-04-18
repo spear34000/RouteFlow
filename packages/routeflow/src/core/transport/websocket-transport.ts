@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { ReactiveEngine } from '../reactive/engine.js'
 import { extractParams, normalizeSubscriptionPath, pathMatchesPattern } from '../reactive/engine.js'
+import { sanitizeStringRecord } from '../sanitize.js'
 import type { Context } from '../types.js'
 import { ReactiveApiError } from '../errors.js'
 
@@ -298,7 +299,7 @@ export class WebSocketTransport {
   private handleSubscribe(ws: WebSocket, clientId: string, msg: SubscribeMessage): void {
     const { path, query = {} } = msg
     const normalized = normalizeSubscriptionPath(path)
-    const mergedQuery = { ...normalized.query, ...query }
+    const mergedQuery = sanitizeStringRecord({ ...normalized.query, ...query })
 
     // Find the matching route pattern
     const pattern = this.routePatterns.find((p) => pathMatchesPattern(normalized.pathname, p))
